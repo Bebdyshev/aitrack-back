@@ -36,8 +36,20 @@ def register_user(user: UserCreate, db: Session = Depends(get_db)) -> dict:
         role=user.role
     )
     db.add(new_user)
+    
+    # Сохраняем доктора в отдельной таблице, если это доктор
+    if user.role == "doctor":
+        new_doctor = DoctorsInDB(
+            name=user.name,
+            email=user.email,
+            hashed_password=hashed_pw,
+            doctor_type=user.doctor_type  # Сохраняем тип доктора
+        )
+        db.add(new_doctor)
+    
     db.commit()
     return {"msg": "User created successfully"}
+
 
 
 @app.post("/login/", response_model=Token)
@@ -51,7 +63,7 @@ def login_for_access_token(user: UserLogin, db: Session = Depends(get_db)) -> To
         data={"sub": user.email, "role": db_user.role},  # Добавляем роль в токен
         expires_delta=access_token_expires
     )
-    return {"access_token": access_token, "token_type": "bearer"}
+    return {"access_token": access_token, "token_type": "bearer", "role": db_user.role}
 
 
 UPLOAD_FOLDER = "uploads/"
@@ -131,3 +143,5 @@ def get_user_requests(token: str = Depends(oauth2_scheme), db: Session = Depends
     # Получение запросов пользователя
     requests = db.query(UserRequest).filter(UserRequest.user_id == user.id).all()
     return [{"symptoms": req.symptoms, "image_path": req.image_path, "response": req.response} for req in requests]
+
+

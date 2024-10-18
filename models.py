@@ -12,8 +12,8 @@ class DoctorsInDB(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, index=True)
     email = Column(String, unique=True, index=True)
-    subscription_level = Column(String, index=True)
     hashed_password = Column(String)
+    doctor_type = Column(String)  
 
 
 
@@ -44,6 +44,7 @@ class UserCreate(BaseModel):
     email: str
     password: str
     role: str
+    doctor_type: str = None  # Поле для типа доктора (по умолчанию None)
 
 class UserLogin(BaseModel):
     email: str
@@ -52,3 +53,4 @@ class UserLogin(BaseModel):
 class Token(BaseModel):
     access_token: str
     token_type: str
+    role: str
