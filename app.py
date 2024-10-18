@@ -235,4 +235,4 @@ def get_my_patients(token: str = Depends(oauth2_scheme), db: Session = Depends(g
     # Получаем все запросы, связанные с доктором
     patient_requests = db.query(UserRequest).filter(UserRequest.doctor_id == doctor.id).all()
 
-    return [{"name": req.name, "image_path": req.image_path, "symptoms": req.symptoms, "response": req.response} for req in patient_requests]
+    return [{"name": req.name, "id": req.id, "image_path": req.image_path, "symptoms": req.symptoms, "response": req.response} for req in patient_requests]
