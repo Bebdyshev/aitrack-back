@@ -7,7 +7,9 @@ engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 def init_db():
+    print("Initializing the database...")
     Base.metadata.create_all(bind=engine)
+    print("Database initialized successfully.")
 
 def get_db():
     db = SessionLocal()
@@ -15,4 +17,3 @@ def get_db():
         yield db
     finally:
         db.close()
-

@@ -1,16 +1,10 @@
-from sqlalchemy import Column, Integer, String, ForeignKey, JSON
+from sqlalchemy import Column, Integer, String, Text, ForeignKey
 from sqlalchemy.ext.declarative import declarative_base
 from pydantic import BaseModel
+from sqlalchemy.orm import relationship
 
 Base = declarative_base()
 
-class UserInDB(Base):
-    __tablename__ = "users"
-    id = Column(Integer, primary_key=True, index=True)
-    name = Column(String, nullable=False)
-    email = Column(String, unique=True, nullable=False)
-    hashed_password = Column(String, nullable=False)
-    role = Column(String, nullable=False)
 
 class DoctorsInDB(Base):
     __tablename__ = "doctors"
@@ -20,6 +14,30 @@ class DoctorsInDB(Base):
     email = Column(String, unique=True, index=True)
     subscription_level = Column(String, index=True)
     hashed_password = Column(String)
+
+
+
+class UserInDB(Base):
+    __tablename__ = 'users'
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, index=True)
+    email = Column(String, unique=True, index=True)
+    hashed_password = Column(String)
+    role = Column(String)
+
+
+class UserRequest(Base):
+    __tablename__ = "user_requests"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    image_path = Column(String, nullable=False)
+    symptoms = Column(Text, nullable=False)
+    response = Column(Text, nullable=True)
+    user = relationship("UserInDB", back_populates="requests")
+
+UserInDB.requests = relationship("UserRequest", back_populates="user")
+
 
 class UserCreate(BaseModel):
     name: str
