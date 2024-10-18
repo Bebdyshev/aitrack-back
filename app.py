@@ -78,7 +78,14 @@ def login_for_access_token(user: UserLogin, db: Session = Depends(get_db)) -> To
 UPLOAD_FOLDER = "uploads/"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-def send_request_to_gemini(symptoms: str, api_key: str) -> str:
+def send_request_to_gemini(symptoms: str, api_key: str, db: Session) -> str:
+    # Получение списка докторов из базы данных
+    doctors = db.query(DoctorsInDB).all()
+    
+    # Создаем строку с именами докторов
+    doctor_names = ', '.join([doctor.doctor_type for doctor in doctors])
+    
+    # Запрос для Gemini API для анализа симптомов
     url = f'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key={api_key}'
     data = {
         "contents": [
@@ -93,23 +100,26 @@ def send_request_to_gemini(symptoms: str, api_key: str) -> str:
         'Content-Type': 'application/json'
     }
     response = requests.post(url, json=data, headers=headers)
-    new_promt = "ЩАС ПРОСТО ОТПРАВЬ МНЕ ОДНО СЛОВО, НИЧЕГО БОЛЬШЕ НЕ ПИШИ, ПРОСТО ВЫБЕРИ ВРАЧА ИЗ СПИСКА К КОТОРОМУ ИДТИ: терапевт, дерматолог " + symptoms
+    
+    # Формируем новый промпт для выбора врача
+    new_prompt = f"ЩАС ПРОСТО ОТПРАВЬ МНЕ ОДНО СЛОВО, НИЧЕГО БОЛЬШЕ НЕ ПИШИ, ПРОСТО ВЫБЕРИ ВРАЧА ИЗ СПИСКА К КОТОРОМУ ИДТИ: {doctor_names}, ДАЖЕ ТОЧКУ НЕ ПИШИ, НЕ ПИШИ С БОЛЬШОЙ БУКВЫ. Симптомы: {symptoms}"
     data = {
         "contents": [
             {
                 "parts": [
-                    {"text": new_promt}
+                    {"text": new_prompt}
                 ]
             }
         ]
     }
-    headers = {
-        'Content-Type': 'application/json'
-    }
     best_doctor = requests.post(url, json=data, headers=headers)
-    print(best_doctor.text)
+    
+    # print(best_doctor.text)
+    best_doctor_json = best_doctor.json()
+    gemini_response_json = response.json()
+
     if response.status_code == 200:
-        return response.text
+        return best_doctor_json, gemini_response_json
     else:
         raise HTTPException(status_code=response.status_code, detail=f"Error from Gemini API: {response.text}")
 
@@ -122,30 +132,57 @@ async def submit_request(
 ):
     # Проверка токена пользователя
     payload = verify_access_token(token)
+    
+    # Проверяем, что payload не None
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid token or unauthorized")
+    
     user_email = payload.get("sub")
+    
+    if not user_email:
+        raise HTTPException(status_code=400, detail="User email not found in token")
+    
     user = db.query(UserInDB).filter(UserInDB.email == user_email).first()
     
     if not user:
         raise HTTPException(status_code=400, detail="User not found")
-
+    
     # Сохранение изображения на сервере
     file_location = f"{UPLOAD_FOLDER}{file.filename}"
     with open(file_location, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
     # Отправка запроса на API Gemini
+    best_doctor = ""
+    gemini_response = ""
     try:
-        gemini_response = send_request_to_gemini(symptoms=symptoms, api_key="AIzaSyBNZ9RJAIcuuLlhCj8KtbxoC6opxY_5q5E")
+        best_doctor1, gemini_response1 = send_request_to_gemini(symptoms=symptoms, api_key="AIzaSyBNZ9RJAIcuuLlhCj8KtbxoC6opxY_5q5E", db=db)
+        print(type(best_doctor1))
+        print(type(gemini_response1))
+        best_doctor = best_doctor1['candidates'][0]['content']['parts'][0]['text'].strip()
+        gemini_response = gemini_response1['candidates'][0]['content']['parts'][0]['text'].strip()
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    print(best_doctor1)
+    print(gemini_response1)
+    # Найти доктора в базе данных по его имени
+    doctor = db.query(DoctorsInDB).filter(DoctorsInDB.doctor_type == best_doctor).first()
 
+
+    # Проверка, что доктор найден
+    if not doctor:
+        raise HTTPException(status_code=404, detail=f"Doctor {best_doctor} not found")
+
+    # Присваиваем doctor_id
+    best_doctor_id = doctor.id
     # Сохранение запроса в базе данных
     user_request = UserRequest(
         user_id=user.id,
         image_path=file_location,
         symptoms=symptoms,
-        response=gemini_response
-
+        response=gemini_response,
+        doctor_id=best_doctor_id
     )
     db.add(user_request)
     db.commit()
@@ -168,3 +205,30 @@ def get_user_requests(token: str = Depends(oauth2_scheme), db: Session = Depends
     return [{"symptoms": req.symptoms, "image_path": req.image_path, "response": req.response} for req in requests]
 
 
+
+@app.get("/my_patients/", response_model=list)
+def get_my_patients(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> list:
+    # Проверка токена доктора
+    payload = verify_access_token(token)
+    
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid token or unauthorized")
+    
+    user_email = payload.get("sub")
+    
+    # Находим пользователя по email
+    doctor_user = db.query(UserInDB).filter(UserInDB.email == user_email).first()
+    
+    if not doctor_user or doctor_user.role != "doctor":
+        raise HTTPException(status_code=403, detail="User is not a doctor")
+    
+    # Получаем доктора из базы данных
+    doctor = db.query(DoctorsInDB).filter(DoctorsInDB.email == doctor_user.email).first()
+    
+    if not doctor:
+        raise HTTPException(status_code=404, detail="Doctor not found")
+
+    # Получаем все запросы, связанные с доктором
+    patient_requests = db.query(UserRequest).filter(UserRequest.doctor_id == doctor.id).all()
+
+    return [{"id": req.id, "user_id": req.user_id, "image_path": req.image_path, "symptoms": req.symptoms, "response": req.response} for req in patient_requests]
