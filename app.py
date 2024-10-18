@@ -55,9 +55,17 @@ def register_user(user: UserCreate, db: Session = Depends(get_db)) -> dict:
             doctor_type=user.doctor_type  # Сохраняем тип доктора
         )
         db.add(new_doctor)
-    
+
     db.commit()
-    return {"msg": "User created successfully"}
+    
+    # Создаем access token для нового пользователя
+    access_token_expires = timedelta(minutes=30)
+    access_token = create_access_token(
+        data={"sub": user.email, "role": user.role},  # Используем email и роль в токене
+        expires_delta=access_token_expires
+    )
+
+    return {"access_token": access_token, "token_type": "bearer", "role": user.role}
 
 
 
