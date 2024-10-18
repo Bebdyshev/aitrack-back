@@ -80,6 +80,7 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 def send_request_to_gemini(symptoms: str, api_key: str, db: Session) -> str:
     # Получение списка докторов из базы данных
+
     doctors = db.query(DoctorsInDB).all()
     
     # Создаем строку с именами докторов
@@ -100,9 +101,9 @@ def send_request_to_gemini(symptoms: str, api_key: str, db: Session) -> str:
         'Content-Type': 'application/json'
     }
     response = requests.post(url, json=data, headers=headers)
-    
+    print(1)
     # Формируем новый промпт для выбора врача
-    new_prompt = f"ЩАС ПРОСТО ОТПРАВЬ МНЕ ОДНО СЛОВО, НИЧЕГО БОЛЬШЕ НЕ ПИШИ, ПРОСТО ВЫБЕРИ ВРАЧА ИЗ СПИСКА К КОТОРОМУ ИДТИ: {doctor_names}, ДАЖЕ ТОЧКУ НЕ ПИШИ, НЕ ПИШИ С БОЛЬШОЙ БУКВЫ. Симптомы: {symptoms}"
+    new_prompt = f"ЩАС ПРОСТО ОТПРАВЬ МНЕ ОДНО СЛОВО, НИЧЕГО БОЛЬШЕ НЕ ПИШИ, ПРОСТО ВЫБЕРИ ВРАЧА ИЗ СПИСКА К КОТОРОМУ ИДТИ: {doctor_names}, ДАЖЕ ТОЧКУ НЕ ПИШИ. Симптомы: {symptoms}"
     data = {
         "contents": [
             {
@@ -151,7 +152,7 @@ async def submit_request(
     file_location = f"{UPLOAD_FOLDER}{file.filename}"
     with open(file_location, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
-
+    
     # Отправка запроса на API Gemini
     best_doctor = ""
     gemini_response = ""
@@ -176,12 +177,15 @@ async def submit_request(
 
     # Присваиваем doctor_id
     best_doctor_id = doctor.id
+    best_doctor_name = doctor.name
     # Сохранение запроса в базе данных
     user_request = UserRequest(
         user_id=user.id,
+        name = user.name,
         image_path=file_location,
         symptoms=symptoms,
         response=gemini_response,
+        doctor_name = best_doctor_name,
         doctor_id=best_doctor_id
     )
     db.add(user_request)
@@ -231,4 +235,4 @@ def get_my_patients(token: str = Depends(oauth2_scheme), db: Session = Depends(g
     # Получаем все запросы, связанные с доктором
     patient_requests = db.query(UserRequest).filter(UserRequest.doctor_id == doctor.id).all()
 
-    return [{"id": req.id, "user_id": req.user_id, "image_path": req.image_path, "symptoms": req.symptoms, "response": req.response} for req in patient_requests]
+    return [{"name": req.name, "image_path": req.image_path, "symptoms": req.symptoms, "response": req.response} for req in patient_requests]
