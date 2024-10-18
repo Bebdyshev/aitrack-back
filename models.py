@@ -34,6 +34,7 @@ class UserRequest(Base):
     image_path = Column(String, nullable=False)
     symptoms = Column(Text, nullable=False)
     response = Column(Text, nullable=True)
+    doctor_id = Column(Text, nullable=True)
     user = relationship("UserInDB", back_populates="requests")
 
 UserInDB.requests = relationship("UserRequest", back_populates="user")

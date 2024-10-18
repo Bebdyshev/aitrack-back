@@ -13,10 +13,19 @@ import requests
 from config import Base
 import shutil
 import os
+from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
 
 init_db()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Или укажите конкретные домены, например, ["http://localhost:3000"]
+    allow_credentials=True,
+    allow_methods=["*"],  # Разрешить все методы (GET, POST, DELETE и т.д.)
+    allow_headers=["*"],  # Разрешить все заголовки
+)
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 @app.post("/register/", response_model=dict)
@@ -69,7 +78,6 @@ def login_for_access_token(user: UserLogin, db: Session = Depends(get_db)) -> To
 UPLOAD_FOLDER = "uploads/"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-# Функция для отправки запроса на API Gemini
 def send_request_to_gemini(symptoms: str, api_key: str) -> str:
     url = f'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key={api_key}'
     data = {
@@ -85,7 +93,21 @@ def send_request_to_gemini(symptoms: str, api_key: str) -> str:
         'Content-Type': 'application/json'
     }
     response = requests.post(url, json=data, headers=headers)
-    
+    new_promt = "ЩАС ПРОСТО ОТПРАВЬ МНЕ ОДНО СЛОВО, НИЧЕГО БОЛЬШЕ НЕ ПИШИ, ПРОСТО ВЫБЕРИ ВРАЧА ИЗ СПИСКА К КОТОРОМУ ИДТИ: терапевт, дерматолог " + symptoms
+    data = {
+        "contents": [
+            {
+                "parts": [
+                    {"text": new_promt}
+                ]
+            }
+        ]
+    }
+    headers = {
+        'Content-Type': 'application/json'
+    }
+    best_doctor = requests.post(url, json=data, headers=headers)
+    print(best_doctor.text)
     if response.status_code == 200:
         return response.text
     else:
@@ -123,6 +145,7 @@ async def submit_request(
         image_path=file_location,
         symptoms=symptoms,
         response=gemini_response
+
     )
     db.add(user_request)
     db.commit()
