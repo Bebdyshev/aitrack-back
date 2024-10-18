@@ -245,3 +245,32 @@ def get_my_patients(token: str = Depends(oauth2_scheme), db: Session = Depends(g
 
     return [{"name": req.name, "id": req.id, "image_path": req.image_path, "symptoms": req.symptoms, "response": req.response} for req in patient_requests]
 
+@app.get("/patient_request/{request_id}", response_model=UserRequestModel)
+def get_patient_request(request_id: int, token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> UserRequestModel:
+    # Проверка токена доктора
+    payload = verify_access_token(token)
+    
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid token or unauthorized")
+    
+    user_email = payload.get("sub")
+    
+    # Находим пользователя по email
+    doctor_user = db.query(UserInDB).filter(UserInDB.email == user_email).first()
+    
+    if not doctor_user or doctor_user.role != "doctor":
+        raise HTTPException(status_code=403, detail="User is not a doctor")
+    
+    # Получаем доктора из базы данных
+    doctor = db.query(DoctorsInDB).filter(DoctorsInDB.email == doctor_user.email).first()
+    
+    if not doctor:
+        raise HTTPException(status_code=404, detail="Doctor not found")
+
+    # Получаем запрос по ID
+    patient_request = db.query(UserRequest).filter(UserRequest.id == request_id, UserRequest.doctor_id == doctor.id).first()
+
+    if not patient_request:
+        raise HTTPException(status_code=404, detail="Request not found or not associated with this doctor")
+
+    return UserRequestModel.from_orm(patient_request)

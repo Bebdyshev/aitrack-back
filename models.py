@@ -16,7 +16,6 @@ class DoctorsInDB(Base):
     doctor_type = Column(String)  
 
 
-
 class UserInDB(Base):
     __tablename__ = 'users'
 
@@ -38,6 +37,7 @@ class UserRequest(Base):
     doctor_id = Column(Text, nullable=True)
     doctor_name = Column(Text, nullable=True)
     user = relationship("UserInDB", back_populates="requests")
+    
 
 UserInDB.requests = relationship("UserRequest", back_populates="user")
 
@@ -57,3 +57,18 @@ class Token(BaseModel):
     access_token: str
     token_type: str
     role: str
+
+
+class UserRequestModel(BaseModel):
+    id: int
+    name: str
+    user_id: int
+    image_path: str
+    symptoms: str
+    response: str
+    doctor_id: int
+    doctor_name: str
+
+    class Config:
+        orm_mode = True
+        from_attributes = True
