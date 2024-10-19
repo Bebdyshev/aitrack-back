@@ -467,17 +467,18 @@ async def submit_request(
     # Формируем запрос для OpenAI
     prompt = (
         f"Предположи болезнь по данным которые я скинул, результаты не мои, "
-        f"ПРОСТО НАПИШИ ДИАГНОЗ И почему так! Основываясь на этих симптомах: {symptoms}, "
-        f"и файл: {file.filename}."
+        f"ПРОСТО НАПИШИ ДИАГНОЗ И почему так! Основываясь на этих симптомах: {symptoms}"
     )
 
     # Отправка запроса к OpenAI
     response = openai.ChatCompletion.create(
-        model="gpt-3.5-turbo",  # Замените на нужную модель
+        model="gpt-4o-mini",  # Замените на нужную модель
         messages=[
             {"role": "user", "content": prompt}
         ]
     )
+
+    
 
     gemini_response = response.choices[0].message['content']
 
@@ -494,7 +495,7 @@ def file_from_trascript(text):
     }
 
     model = genai.GenerativeModel(
-        model_name="gemini-1.5-pro",
+        model_name="gemini-1.5-flash",
         generation_config=generation_config,
     )
 
@@ -503,9 +504,9 @@ def file_from_trascript(text):
         ]
     )
 
-    response = chat_session.send_message(f'Я сделал транскрипт разговора врача и пациента, теперь ты должен из этого трансрипта взять полезную информацию о болезне пациенте, все его симптомы, о его лечении о рекомендациях врача, и так далее, ничего сам не добавляй, сделай прям медицинский документ из поликлиники, бери информацию только из транскрипта: {text}')
-    
-    return (response.text)
+    response = chat_session.send_message(f'Я сделал транскрипт разговора врача и пациента, теперь ты должен из этого трансрипта взять полезную информацию о болезне пациенте, все его симптомы, о его лечении о рекомендациях врача, и так далее, ничего сам не добавляй, сделай прям медицинское описание из поликлиники, бери информацию только из транскрипта: {text}')
+    response1 = chat_session.send_message(f'Я сделал транскрипт разговора врача и пациента, теперь ты должен из этого трансрипта взять полезную информацию о болезне пациенте, и напиши рецепт лекарств для пациента исходя от разговора врача: {text}')  
+    return (response.text, response1.text)
 
 
 
@@ -541,7 +542,7 @@ async def transcribe_audio(
             language="ru"
         )
         
-        document_text = file_from_trascript(transcription['text'])
+        document_text, reciept_text = file_from_trascript(transcription['text'])
 
         # Save the transcript and document in the database
         new_document = MedicalDocument(
@@ -551,7 +552,15 @@ async def transcribe_audio(
         )
         db.add(new_document)
         db.commit()
-        return {"transcript": transcription['text'], "document": document_text}
+
+        new_document = MedicalDocument(
+            doctor_id=doctor_user.id,
+            transcript=transcription['text'],
+            document=reciept_text
+        )
+        db.add(new_document)
+        db.commit()
+        return {"transcript": transcription['text'], "document": document_text, "reciept": reciept_text}
     
     except Exception as e:
         return {"error": str(e)}
