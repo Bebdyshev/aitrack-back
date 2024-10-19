@@ -63,6 +63,14 @@ UserInDB.appointments = relationship("Appointment", back_populates="patient")
 DoctorsInDB.appointments = relationship("Appointment", back_populates="doctor")
 
 
+class MedicalDocument(Base):
+    __tablename__ = "medical_documents"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    doctor_id = Column(Integer, ForeignKey('users.id'))
+    transcript = Column(Text, nullable=False)
+    document = Column(Text, nullable=False)
+
 
 class UserCreate(BaseModel):
     name: str

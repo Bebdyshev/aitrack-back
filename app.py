@@ -435,7 +435,7 @@ import io
 
 load_dotenv()
 
-openai_api_key = os.getenv("OPENAI_API_KEY")
+openai.api_key = os.getenv("OPENAI_API_KEY")
 @app.post("/predict/")
 async def submit_request(
     symptoms: str = Form(...),
@@ -503,9 +503,9 @@ def file_from_trascript(text):
         ]
     )
 
-    response = chat_session.send_message(f'Я сделал транскрипт разговора врача и пациента, теперь ты должен из этого трансрипта взять полезную информацию о болезне пациенте, все его симптомы, о его лечении о рекомендациях врача, и так далее, ничего сам не добавляй, бери информацию только из транскрипта: {text}')
-
-    print(response.text)
+    response = chat_session.send_message(f'Я сделал транскрипт разговора врача и пациента, теперь ты должен из этого трансрипта взять полезную информацию о болезне пациенте, все его симптомы, о его лечении о рекомендациях врача, и так далее, ничего сам не добавляй, сделай прям медицинский документ из поликлиники, бери информацию только из транскрипта: {text}')
+    
+    return (response.text)
 
 
 
@@ -540,8 +540,18 @@ async def transcribe_audio(
             file=audio_file,
             language="ru"
         )
-        file_from_trascript(transcription['text'])
-        return {"transcript": transcription['text']}
+        
+        document_text = file_from_trascript(transcription['text'])
+
+        # Save the transcript and document in the database
+        new_document = MedicalDocument(
+            doctor_id=doctor_user.id,
+            transcript=transcription['text'],
+            document=document_text
+        )
+        db.add(new_document)
+        db.commit()
+        return {"transcript": transcription['text'], "document": document_text}
     
     except Exception as e:
         return {"error": str(e)}
