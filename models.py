@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Text, ForeignKey
+from sqlalchemy import Column, Integer, String, Text, ForeignKey, DateTime
 from sqlalchemy.ext.declarative import declarative_base
 from pydantic import BaseModel
 from sqlalchemy.orm import relationship
@@ -40,6 +40,27 @@ class UserRequest(Base):
     
 
 UserInDB.requests = relationship("UserRequest", back_populates="user")
+
+
+class Appointment(Base):
+    __tablename__ = "appointments"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    start_time = Column(DateTime, nullable=False)
+    end_time = Column(DateTime, nullable=False)
+    patient_name = Column(String, nullable=False)
+    patient_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    doctor_name = Column(String, nullable=False)
+    doctor_id = Column(Integer, ForeignKey("doctors.id"), nullable=False)
+    doctor_type = Column(String, nullable=False)
+
+    patient = relationship("UserInDB", back_populates="appointments")
+    doctor = relationship("DoctorsInDB", back_populates="appointments")
+
+# Не забудьте обновить ваши модели UserInDB и DoctorsInDB, чтобы они знали о связи.
+UserInDB.appointments = relationship("Appointment", back_populates="patient")
+DoctorsInDB.appointments = relationship("Appointment", back_populates="doctor")
+
 
 
 class UserCreate(BaseModel):

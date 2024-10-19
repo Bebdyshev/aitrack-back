@@ -14,7 +14,8 @@ from config import Base
 import shutil
 import os
 from fastapi.middleware.cors import CORSMiddleware
-
+from datetime import datetime
+import google.generativeai as genai
 app = FastAPI()
 
 init_db()
@@ -86,51 +87,65 @@ def login_for_access_token(user: UserLogin, db: Session = Depends(get_db)) -> To
 UPLOAD_FOLDER = "uploads/"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
+# Настройка API ключа для модели Google Generative AI
+genai.configure(api_key="AIzaSyBNZ9RJAIcuuLlhCj8KtbxoC6opxY_5q5E")
+
+
+# Параметры для генерации
+generation_config = {
+    "temperature": 1,
+    "top_p": 0.95,
+    "top_k": 64,
+    "max_output_tokens": 8192,
+    "response_mime_type": "text/plain",
+}
+
+# Инициализация настроенной модели
+model = genai.GenerativeModel(
+    model_name="tunedModels/untitled-prompt1-6chq2zgt8t9p",
+    generation_config=generation_config,
+)
+
 def send_request_to_gemini(symptoms: str, api_key: str, db: Session) -> str:
     # Получение списка докторов из базы данных
-
     doctors = db.query(DoctorsInDB).all()
     
     # Создаем строку с именами докторов
     doctor_names = ', '.join([doctor.doctor_type for doctor in doctors])
     
-    # Запрос для Gemini API для анализа симптомов
+    # Первый запрос через настроенную модель для анализа симптомов
+    chat_session = model.start_chat(
+        history=[]
+    )
+
+    response = chat_session.send_message(symptoms)
+    gemini_response = response.text  # Результат анализа симптомов от модели
+
+    # Формируем новый запрос для обычного Gemini API для выбора врача
+    new_prompt = f"ЩАС ПРОСТО ОТПРАВЬ МНЕ ОДНО СЛОВО, НИЧЕГО БОЛЬШЕ НЕ ПИШИ, ПРОСТО ВЫБЕРИ ВРАЧА ИЗ СПИСКА К КОТОРОМУ ИДТИ: {doctor_names}, ДАЖЕ ТОЧКУ НЕ ПИШИ. Симптомы: {symptoms}"
+    
     url = f'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key={api_key}'
     data = {
-        "contents": [
-            {
-                "parts": [
-                    {"text": symptoms}
-                ]
-            }
-        ]
+        "prompt": new_prompt,
+        "max_tokens": 20
     }
     headers = {
         'Content-Type': 'application/json'
     }
-    response = requests.post(url, json=data, headers=headers)
-    print(1)
-    # Формируем новый промпт для выбора врача
-    new_prompt = f"ЩАС ПРОСТО ОТПРАВЬ МНЕ ОДНО СЛОВО, НИЧЕГО БОЛЬШЕ НЕ ПИШИ, ПРОСТО ВЫБЕРИ ВРАЧА ИЗ СПИСКА К КОТОРОМУ ИДТИ: {doctor_names}, ДАЖЕ ТОЧКУ НЕ ПИШИ. Симптомы: {symptoms}"
-    data = {
-        "contents": [
-            {
-                "parts": [
-                    {"text": new_prompt}
-                ]
-            }
-        ]
-    }
-    best_doctor = requests.post(url, json=data, headers=headers)
     
-    # print(best_doctor.text)
-    best_doctor_json = best_doctor.json()
-    gemini_response_json = response.json()
-
-    if response.status_code == 200:
-        return best_doctor_json, gemini_response_json
+    best_doctor_response = requests.post(url, json=data, headers=headers)
+    
+    if best_doctor_response.status_code == 200:
+        best_doctor_json = best_doctor_response.json()
+        best_doctor = best_doctor_json['choices'][0]['message']  # Ответ для выбора доктора
     else:
-        raise HTTPException(status_code=response.status_code, detail=f"Error from Gemini API: {response.text}")
+        raise HTTPException(status_code=best_doctor_response.status_code, detail=f"Error from Gemini API: {best_doctor_response.text}")
+
+    # Если всё прошло успешно, возвращаем два ответа
+    if response:
+        return best_doctor, gemini_response
+    else:
+        raise HTTPException(status_code=500, detail="Error from Gemini API")
 
 @app.post("/submit_request/")
 async def submit_request(
@@ -243,7 +258,7 @@ def get_my_patients(token: str = Depends(oauth2_scheme), db: Session = Depends(g
     # Получаем все запросы, связанные с доктором
     patient_requests = db.query(UserRequest).filter(UserRequest.doctor_id == doctor.id).all()
 
-    return [{"name": req.name, "id": req.id, "image_path": req.image_path, "symptoms": req.symptoms, "response": req.response} for req in patient_requests]
+    return [{"name": req.name, "id": req.id} for req in patient_requests]
 
 @app.get("/patient_request/{request_id}", response_model=UserRequestModel)
 def get_patient_request(request_id: int, token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> UserRequestModel:
@@ -274,3 +289,55 @@ def get_patient_request(request_id: int, token: str = Depends(oauth2_scheme), db
         raise HTTPException(status_code=404, detail="Request not found or not associated with this doctor")
 
     return UserRequestModel.from_orm(patient_request)
+
+class AppointmentCreate(BaseModel):
+    start_time: str
+    end_time: str
+    doctor_id: int
+
+@app.post("/create_appointment/", response_model=dict)
+async def create_appointment(
+    appointment: AppointmentCreate, 
+    token: str = Depends(oauth2_scheme), 
+    db: Session = Depends(get_db)  # Передаем сессию базы данных
+):
+    # Проверка токена для авторизации
+    payload = verify_access_token(token)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid token or unauthorized")
+    
+    user_email = payload.get("sub")
+    
+    # Находим пациента по ID
+    patient = db.query(UserInDB).filter(UserInDB.email == user_email).first()
+    if not patient:
+        raise HTTPException(status_code=404, detail="Patient not found")
+
+    # Находим врача по ID
+    doctor = db.query(DoctorsInDB).filter(DoctorsInDB.id == appointment.doctor_id).first()
+    if not doctor:
+        raise HTTPException(status_code=404, detail="Doctor not found")
+
+    # Преобразование строк времени в объекты datetime
+    try:
+        start_time = datetime.fromisoformat(appointment.start_time)
+        end_time = datetime.fromisoformat(appointment.end_time)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date format")
+
+    # Создание нового события записи
+    new_appointment = Appointment(
+        start_time=start_time,
+        end_time=end_time,
+        patient_name=patient.name,
+        patient_id=patient.id,
+        doctor_name=doctor.name,
+        doctor_id=doctor.id,
+        doctor_type=doctor.doctor_type
+    )
+
+    db.add(new_appointment)
+    db.commit()
+    db.refresh(new_appointment)  # Получить обновленную запись
+
+    return {"id": new_appointment.id, "message": "Appointment created successfully"}
