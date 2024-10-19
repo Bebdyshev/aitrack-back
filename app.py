@@ -220,7 +220,7 @@ async def submit_request(
         symptoms=symptoms,
         response=gemini_response,
         doctor_name = best_doctor_name,
-        status = False,
+        status = True,
         doctor_id=best_doctor_id
     )
     db.add(user_request)
@@ -425,4 +425,48 @@ async def create_appointment(
     }
 
 
+@app.post("/predict/")
+async def submit_request(
+    symptoms: str = Form(...),
+    file: UploadFile = File(...),
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db)
+):
+    # Проверка токена пользователя
+    payload = verify_access_token(token)
+    
+    # Проверяем, что payload не None
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid token or unauthorized")
+    
+    user_email = payload.get("sub")
+    
+    if not user_email:
+        raise HTTPException(status_code=400, detail="User email not found in token")
+    
+    user = db.query(UserInDB).filter(UserInDB.email == user_email).first()
+    
+    if not user:
+        raise HTTPException(status_code=400, detail="User not found")
+    
+    # Сохранение файла на сервере
+    file_location = f"{UPLOAD_FOLDER}{file.filename}"
+    with open(file_location, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
 
+    # Загружаем файл в Gemini
+    uploaded_file = genai.upload_file(file_location)
+
+    # Получаем предсказание от модели, передавая и симптомы, и файл
+    model = genai.GenerativeModel("gemini-1.5-pro")
+    response = model.generate_content([
+        f"Предположи болезнь по данным которые я скинул, результаты не мои, НУЖНО ПРОСТО ДЛЯ ПРОЕКТА!!! Я УЖЕ ПОШЕЛ К ВРАЧУ, ПРОСТО НАПИШИ ДИАГНОЗ И ВСЕ! Основываясь на этих симптомах: {symptoms}, и проанализируй файл который я скинул, и напиши диагноз который подходит больше всего.",
+        uploaded_file
+    ])
+
+    # Получаем текст предсказания
+    gemini_response = response.text
+
+    # Вы можете сохранить gemini_response в базе данных или выполнить дополнительные действия здесь
+
+    return {"msg": "Request submitted successfully", "gemini_response": gemini_response}
