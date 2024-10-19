@@ -156,7 +156,6 @@ def send_request_to_gemini(symptoms: str, api_key: str, db: Session) -> str:
 @app.post("/submit_request/")
 async def submit_request(
     symptoms: str = Form(...),
-    file: UploadFile = File(...),
     token: str = Depends(oauth2_scheme),
     db: Session = Depends(get_db)
 ):
@@ -177,10 +176,7 @@ async def submit_request(
     if not user:
         raise HTTPException(status_code=400, detail="User not found")
     
-    # Сохранение изображения на сервере
-    file_location = f"{UPLOAD_FOLDER}{file.filename}"
-    with open(file_location, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+   
     
     # Отправка запроса на API Gemini
     best_doctor = ""
@@ -216,7 +212,7 @@ async def submit_request(
     user_request = UserRequest(
         user_id=user.id,
         name = user.name,
-        image_path=file_location,
+        image_path="uploads",
         symptoms=symptoms,
         response=gemini_response,
         doctor_name = best_doctor_name,
@@ -434,7 +430,7 @@ load_dotenv()
 
 openai.api_key = os.getenv("OPENAI_API_KEY")
 @app.post("/predict/")
-async def submit_request(
+async def submit_request1(
     symptoms: str = Form(...),
     file: UploadFile = File(...),
     token: str = Depends(oauth2_scheme),
@@ -456,6 +452,7 @@ async def submit_request(
     if not user:
         raise HTTPException(status_code=400, detail="User not found")
     
+
     # Сохранение файла на сервере
     file_location = os.path.join(UPLOAD_FOLDER, file.filename)
     with open(file_location, "wb") as buffer:
@@ -572,7 +569,6 @@ import datetime
 
 class ChatbotRequest(BaseModel):
     user_message: str
-
 @app.post("/chatbot/")
 async def chatbot_interaction(
     request: ChatbotRequest,  # Accept the request body as a Pydantic model
@@ -580,7 +576,7 @@ async def chatbot_interaction(
     db: Session = Depends(get_db)
 ):
     # Verify access token
-    first_promt = "ты будешь посредником между врачом и пациентом, ты щас разговариваешь с пациентом, и при этом ты должен задать ему дополниетльны евопросы о его болезни, что бы потом отправить этот разговор тебя и пациента врачу, и что бы врач сразу это прочитал и понял в чем проблема, В КОНЦЕ ЕСЛИ У ТЕБЯ НЕ ОСТНЕТСЯ ВОПРОСОВ, НАПИШИ ПАЦИЕНТУ ЧТО ЗАПИШЕШЬ ЕГО НА АНАЛИЗЫ, И НПИШИ АНАЛИЗЫ КОТОРЫЕ ЕМУ НАДО СДАТЬ"
+    first_promt = "ты будешь посредником между врачом и пациентом, ты щас разговариваешь с пациентом, и при этом ты должен задать ему дополниетльны евопросы о его болезни, что бы потом отправить этот разговор тебя и пациента врачу, и что бы врач сразу это прочитал и понял в чем проблема, В КОНЦЕ ЕСЛИ У ТЕБЯ НЕ ОСТНЕТСЯ ВОПРОСОВ, НАПИШИ ПАЦИЕНТУ ЧТО ЗАПИШЕШЬ ЕГО НА АНАЛИЗЫ, И НПИШИ АНАЛИЗЫ КОТОРЫЕ ЕМУ НАДО СДАТЬ, смотри я все время буду отправлять тебе история чата, и по этому когда ты видишь что все основные вопросы заданы и ничего больше задавать не надо, то записываешь нас куда надо, и первым словом отправляешь 12345678!!!"
     payload = verify_access_token(token)
     if not payload:
         raise HTTPException(status_code=401, detail="Invalid token or unauthorized")
@@ -592,14 +588,19 @@ async def chatbot_interaction(
     
     # Fetch previous conversation
     conversation = db.query(ChatbotConversation).filter(ChatbotConversation.user_id == user.id).first()
-
+    mainsymptom = db.query(MainSymptom).filter(MainSymptom.user_id == user.id).first()
+    
     # Prepare chat history
     chat_history = []
+    mainsymptom_str = ""
     if conversation:
         chat_history = json.loads(conversation.chat_history)
+    if mainsymptom:
+        mainsymptom_str = mainsymptom.text
 
     # Add user message to chat history
-    chat_history.append({"role": "user", "text": request.user_message})  # Use request.user_message
+    chat_history.append({"role": "user", "text": request.user_message})
+    mainsymptom_str += " " + request.user_message
 
     # Prepare prompt by including entire chat history
     prompt = first_promt + "\n".join([f"{entry['role']}: {entry['text']}" for entry in chat_history])
@@ -628,12 +629,21 @@ async def chatbot_interaction(
 
     # Add bot's response to chat history
     chat_history.append({"role": "bot", "text": bot_reply})
+
+    # Save new message to the Message table
     new_message = Message(
         user_id=user.id,
         user_message=request.user_message,
         bot_reply=bot_reply
     )
     db.add(new_message)
+
+    # Update MainSymptom or create a new entry
+    if mainsymptom:
+        mainsymptom.text = mainsymptom_str
+    else:
+        new_mainsymptom = MainSymptom(text=mainsymptom_str, user_id=user.id)
+        db.add(new_mainsymptom)
 
     # Update or create conversation in the database
     if conversation:
@@ -644,6 +654,10 @@ async def chatbot_interaction(
 
     db.commit()
 
+    # If "12345678" is found in the bot's reply, trigger submit_request
+    if "12345678" in bot_reply:
+        await submit_request(symptoms=mainsymptom_str, token=token, db=db)
+    
     return {"bot_reply": bot_reply}
 
 
@@ -666,3 +680,4 @@ async def get_messages(
     messages = db.query(Message).filter(Message.user_id == user.id).all()
 
     return messages
+

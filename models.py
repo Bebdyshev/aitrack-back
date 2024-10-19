@@ -32,6 +32,9 @@ class UserInDB(Base):
     # Define the relationship with ChatbotConversation
     conversations = relationship("ChatbotConversation", back_populates="user")
 
+    messages = relationship("MainSymptom", back_populates="user")
+
+    main_symptoms = relationship("MainSymptom", back_populates="user")
 
 
 class UserRequest(Base):
@@ -138,3 +141,13 @@ class Message(Base):
 
 # Update UserInDB to include the relationship
 UserInDB.messages = relationship("Message", back_populates="user")
+
+
+class MainSymptom(Base):
+    __tablename__ = "main_symptom"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    text = Column(Text, nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+
+    user = relationship("UserInDB", back_populates="main_symptoms")
