@@ -260,6 +260,23 @@ def get_my_patients(token: str = Depends(oauth2_scheme), db: Session = Depends(g
 
     return [{"name": req.name, "id": req.id} for req in patient_requests]
 
+@app.get("/doctors/", response_model=list)
+def get_all_doctors(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> list:
+    payload = verify_access_token(token)
+    
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid token or unauthorized")
+    
+    user_email = payload.get("sub")
+    
+    doctors = db.query(DoctorsInDB).all()
+    
+    if not doctors:
+        raise HTTPException(status_code=404, detail="No doctors found")
+    
+    return [{"id": doctor.id, "name": doctor.name, "doctor_type": doctor.doctor_type} for doctor in doctors]
+
+
 @app.get("/patient_request/{request_id}", response_model=UserRequestModel)
 def get_patient_request(request_id: int, token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> UserRequestModel:
     # Проверка токена доктора
@@ -299,33 +316,33 @@ class AppointmentCreate(BaseModel):
 async def create_appointment(
     appointment: AppointmentCreate, 
     token: str = Depends(oauth2_scheme), 
-    db: Session = Depends(get_db)  # Передаем сессию базы данных
+    db: Session = Depends(get_db)
 ):
-    # Проверка токена для авторизации
+    # Verify token for authorization
     payload = verify_access_token(token)
     if not payload:
         raise HTTPException(status_code=401, detail="Invalid token or unauthorized")
     
     user_email = payload.get("sub")
     
-    # Находим пациента по ID
+    # Find the patient by their email
     patient = db.query(UserInDB).filter(UserInDB.email == user_email).first()
     if not patient:
         raise HTTPException(status_code=404, detail="Patient not found")
 
-    # Находим врача по ID
+    # Find the doctor by ID
     doctor = db.query(DoctorsInDB).filter(DoctorsInDB.id == appointment.doctor_id).first()
     if not doctor:
         raise HTTPException(status_code=404, detail="Doctor not found")
 
-    # Преобразование строк времени в объекты datetime
+    # Convert time strings to datetime objects
     try:
         start_time = datetime.fromisoformat(appointment.start_time)
         end_time = datetime.fromisoformat(appointment.end_time)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid date format")
+        raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD HH:MM")
 
-    # Создание нового события записи
+    # Create the new appointment
     new_appointment = Appointment(
         start_time=start_time,
         end_time=end_time,
@@ -338,6 +355,13 @@ async def create_appointment(
 
     db.add(new_appointment)
     db.commit()
-    db.refresh(new_appointment)  # Получить обновленную запись
+    db.refresh(new_appointment)
 
-    return {"id": new_appointment.id, "message": "Appointment created successfully"}
+    return {
+        "id": new_appointment.id,
+        "message": "Appointment created successfully",
+        "start_time": new_appointment.start_time,
+        "end_time": new_appointment.end_time,
+        "doctor": doctor.name,
+        "patient": patient.name
+    }
