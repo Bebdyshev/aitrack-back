@@ -640,7 +640,7 @@ async def chatbot_interaction(
 
     # Update MainSymptom or create a new entry
     if mainsymptom:
-        mainsymptom.text = mainsymptom_str
+        mainsymptom.text = mainsymptom_str + '\n' + str(bot_reply) + '\n'
     else:
         new_mainsymptom = MainSymptom(text=mainsymptom_str, user_id=user.id)
         db.add(new_mainsymptom)
