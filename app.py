@@ -429,7 +429,6 @@ import openai
 import shutil
 from fastapi import FastAPI, Depends, HTTPException, Form, File, UploadFile
 from sqlalchemy.orm import Session
-import shutil
 import os
 from dotenv import load_dotenv
 import io
@@ -484,6 +483,33 @@ async def submit_request(
 
     return {"response": gemini_response}
 
+
+def file_from_trascript(text):
+    generation_config = {
+        "temperature": 1,
+        "top_p": 0.95,
+        "top_k": 64,
+        "max_output_tokens": 8192,
+        "response_mime_type": "text/plain",
+    }
+
+    model = genai.GenerativeModel(
+        model_name="gemini-1.5-pro",
+        generation_config=generation_config,
+    )
+
+    chat_session = model.start_chat(
+        history=[
+        ]
+    )
+
+    response = chat_session.send_message(f'Я сделал транскрипт разговора врача и пациента, теперь ты должен из этого трансрипта взять полезную информацию о болезне пациенте, все его симптомы, о его лечении о рекомендациях врача, и так далее, ничего сам не добавляй, бери информацию только из транскрипта: {text}')
+
+    print(response.text)
+
+
+
+
 @app.post("/transcribe/")
 async def transcribe_audio(
     file: UploadFile = File(...),
@@ -514,7 +540,7 @@ async def transcribe_audio(
             file=audio_file,
             language="ru"
         )
-
+        file_from_trascript(transcription['text'])
         return {"transcript": transcription['text']}
     
     except Exception as e:
