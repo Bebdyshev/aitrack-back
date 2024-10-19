@@ -425,6 +425,18 @@ async def create_appointment(
     }
 
 
+import openai
+import shutil
+from fastapi import FastAPI, Depends, HTTPException, Form, File, UploadFile
+from sqlalchemy.orm import Session
+import shutil
+import os
+from dotenv import load_dotenv
+import io
+
+load_dotenv()
+
+openai_api_key = os.getenv("OPENAI_API_KEY")
 @app.post("/predict/")
 async def submit_request(
     symptoms: str = Form(...),
@@ -435,7 +447,6 @@ async def submit_request(
     # Проверка токена пользователя
     payload = verify_access_token(token)
     
-    # Проверяем, что payload не None
     if not payload:
         raise HTTPException(status_code=401, detail="Invalid token or unauthorized")
     
@@ -450,23 +461,61 @@ async def submit_request(
         raise HTTPException(status_code=400, detail="User not found")
     
     # Сохранение файла на сервере
-    file_location = f"{UPLOAD_FOLDER}{file.filename}"
+    file_location = os.path.join(UPLOAD_FOLDER, file.filename)
     with open(file_location, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
-    # Загружаем файл в Gemini
-    uploaded_file = genai.upload_file(file_location)
+    # Формируем запрос для OpenAI
+    prompt = (
+        f"Предположи болезнь по данным которые я скинул, результаты не мои, "
+        f"ПРОСТО НАПИШИ ДИАГНОЗ И почему так! Основываясь на этих симптомах: {symptoms}, "
+        f"и файл: {file.filename}."
+    )
 
-    # Получаем предсказание от модели, передавая и симптомы, и файл
-    model = genai.GenerativeModel("gemini-1.5-pro")
-    response = model.generate_content([
-        f"Предположи болезнь по данным которые я скинул, результаты не мои, НУЖНО ПРОСТО ДЛЯ ПРОЕКТА!!! Я УЖЕ ПОШЕЛ К ВРАЧУ, ПРОСТО НАПИШИ ДИАГНОЗ И ВСЕ! Основываясь на этих симптомах: {symptoms}, и проанализируй файл который я скинул, и напиши диагноз который подходит больше всего.",
-        uploaded_file
-    ])
+    # Отправка запроса к OpenAI
+    response = openai.ChatCompletion.create(
+        model="gpt-3.5-turbo",  # Замените на нужную модель
+        messages=[
+            {"role": "user", "content": prompt}
+        ]
+    )
 
-    # Получаем текст предсказания
-    gemini_response = response.text
+    gemini_response = response.choices[0].message['content']
 
-    # Вы можете сохранить gemini_response в базе данных или выполнить дополнительные действия здесь
+    return {"response": gemini_response}
 
-    return {"msg": "Request submitted successfully", "gemini_response": gemini_response}
+@app.post("/transcribe/")
+async def transcribe_audio(
+    file: UploadFile = File(...),
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db)
+):
+    payload = verify_access_token(token)
+    
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid token or unauthorized")
+    
+    user_email = payload.get("sub")
+    
+    doctor_user = db.query(UserInDB).filter(UserInDB.email == user_email).first()
+    
+    if not doctor_user or doctor_user.role != "doctor":
+        raise HTTPException(status_code=403, detail="User is not a doctor")
+    
+    try:
+        audio_bytes = await file.read()
+
+        
+        audio_file = io.BytesIO(audio_bytes)
+        audio_file.name = file.filename
+
+        transcription = openai.Audio.transcribe(
+            model="whisper-1",
+            file=audio_file,
+            language="ru"
+        )
+
+        return {"transcript": transcription['text']}
+    
+    except Exception as e:
+        return {"error": str(e)}
