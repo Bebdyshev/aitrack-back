@@ -220,6 +220,7 @@ async def submit_request(
         symptoms=symptoms,
         response=gemini_response,
         doctor_name = best_doctor_name,
+        status = False,
         doctor_id=best_doctor_id
     )
     db.add(user_request)
@@ -241,7 +242,6 @@ def get_user_requests(token: str = Depends(oauth2_scheme), db: Session = Depends
     # Получение запросов пользователя
     requests = db.query(UserRequest).filter(UserRequest.user_id == user.id).all()
     return [{"symptoms": req.symptoms, "image_path": req.image_path, "response": req.response} for req in requests]
-
 
 
 @app.get("/my_patients/", response_model=list)
@@ -266,10 +266,14 @@ def get_my_patients(token: str = Depends(oauth2_scheme), db: Session = Depends(g
     if not doctor:
         raise HTTPException(status_code=404, detail="Doctor not found")
 
-    # Получаем все запросы, связанные с доктором
-    patient_requests = db.query(UserRequest).filter(UserRequest.doctor_id == doctor.id).all()
+    # Получаем все запросы, связанные с доктором и с статусом False (или 0)
+    patient_requests = db.query(UserRequest).filter(
+        UserRequest.doctor_id == doctor.id,
+        UserRequest.status == True  # Это условие возвращает только запросы со статусом False
+    ).all()
 
     return [{"name": req.name, "id": req.id} for req in patient_requests]
+
 
 @app.get("/doctors/", response_model=list)
 def get_all_doctors(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> list:
@@ -316,6 +320,50 @@ def get_patient_request(request_id: int, token: str = Depends(oauth2_scheme), db
         raise HTTPException(status_code=404, detail="Request not found or not associated with this doctor")
 
     return UserRequestModel.from_orm(patient_request)
+
+
+
+
+
+
+@app.put("/patient_request/{request_id}/status/")
+def update_patient_request_status(
+    request_id: int,
+    new_status: bool,
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db)
+):
+    payload = verify_access_token(token)
+    
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid token or unauthorized")
+    
+    user_email = payload.get("sub")
+    
+    doctor_user = db.query(UserInDB).filter(UserInDB.email == user_email).first()
+    
+    if not doctor_user or doctor_user.role != "doctor":
+        raise HTTPException(status_code=403, detail="User is not a doctor")
+    
+    
+    doctor = db.query(DoctorsInDB).filter(DoctorsInDB.email == doctor_user.email).first()
+    
+    if not doctor:
+        raise HTTPException(status_code=404, detail="Doctor not found")
+
+    patient_request = db.query(UserRequest).filter(UserRequest.id == request_id, UserRequest.doctor_id == doctor.id).first()
+
+    if not patient_request:
+        raise HTTPException(status_code=404, detail="Request not found or not associated with this doctor")
+
+    
+    patient_request.status = False  # Здесь new_status может быть True или False
+    db.commit()  # Сохраняем изменения в базе данных
+
+    return {"msg": "Request status updated successfully", "new_status": new_status}
+
+
+
 
 class AppointmentCreate(BaseModel):
     start_time: str
@@ -375,3 +423,6 @@ async def create_appointment(
         "doctor": doctor.name,
         "patient": patient.name
     }
+
+
+

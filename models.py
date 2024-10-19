@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Text, ForeignKey, DateTime
+from sqlalchemy import Column, Integer, String, Text, ForeignKey, DateTime, Boolean
 from sqlalchemy.ext.declarative import declarative_base
 from pydantic import BaseModel
 from sqlalchemy.orm import relationship
@@ -36,6 +36,7 @@ class UserRequest(Base):
     response = Column(Text, nullable=True)
     doctor_id = Column(Text, nullable=True)
     doctor_name = Column(Text, nullable=True)
+    status = Column(Boolean, nullable=True)
     user = relationship("UserInDB", back_populates="requests")
     
 
@@ -88,6 +89,7 @@ class UserRequestModel(BaseModel):
     symptoms: str
     response: str
     doctor_id: int
+    status: bool
     doctor_name: str
 
     class Config:
