@@ -682,3 +682,31 @@ async def get_messages(
 
     return messages
 
+
+def clear_all_tables(db: Session):
+    # Удаление всех записей из таблицы MainSymptom
+    db.query(MainSymptom).delete()
+    
+    # Удаление всех записей из таблицы ChatbotConversation
+    db.query(ChatbotConversation).delete()
+    
+    # Удаление всех записей из таблицы Message
+    db.query(Message).delete()
+    
+    # Удаление всех записей из таблицы UserRequest
+    db.query(UserRequest).delete()
+    
+    # Фиксируем изменения
+    db.commit()
+
+@app.post("/clear_all/")
+async def clear_all_data(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
+    # Проверка токена
+    payload = verify_access_token(token)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid token or unauthorized")
+    
+    # Очищаем все таблицы
+    clear_all_tables(db)
+    
+    return {"message": "Все таблицы успешно очищены"}
