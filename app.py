@@ -87,65 +87,71 @@ def login_for_access_token(user: UserLogin, db: Session = Depends(get_db)) -> To
 UPLOAD_FOLDER = "uploads/"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-# Настройка API ключа для модели Google Generative AI
-genai.configure(api_key="AIzaSyBNZ9RJAIcuuLlhCj8KtbxoC6opxY_5q5E")
+genai.configure(api_key='AIzaSyBNZ9RJAIcuuLlhCj8KtbxoC6opxY_5q5E')
 
-
-# Параметры для генерации
+# Create the model
 generation_config = {
-    "temperature": 1,
-    "top_p": 0.95,
-    "top_k": 64,
-    "max_output_tokens": 8192,
-    "response_mime_type": "text/plain",
+  "temperature": 1,
+  "top_p": 0.95,
+  "top_k": 64,
+  "max_output_tokens": 8192,
+  "response_mime_type": "text/plain",
 }
-
-# Инициализация настроенной модели
 model = genai.GenerativeModel(
-    model_name="tunedModels/untitled-prompt1-6chq2zgt8t9p",
-    generation_config=generation_config,
+  model_name="tunedModels/untitled-prompt1-6chq2zgt8t9p",
+  generation_config=generation_config,
 )
+
+
 
 def send_request_to_gemini(symptoms: str, api_key: str, db: Session) -> str:
     # Получение списка докторов из базы данных
+
     doctors = db.query(DoctorsInDB).all()
     
     # Создаем строку с именами докторов
     doctor_names = ', '.join([doctor.doctor_type for doctor in doctors])
     
-    # Первый запрос через настроенную модель для анализа симптомов
+    # Запрос для Gemini API для анализа симптомов
+    model = genai.GenerativeModel(
+    model_name="tunedModels/untitled-prompt1-6chq2zgt8t9p",
+    generation_config=generation_config,
+    )
+
     chat_session = model.start_chat(
-        history=[]
+    history=[
+    ]
     )
 
     response = chat_session.send_message(symptoms)
-    gemini_response = response.text  # Результат анализа симптомов от модели
 
-    # Формируем новый запрос для обычного Gemini API для выбора врача
-    new_prompt = f"ЩАС ПРОСТО ОТПРАВЬ МНЕ ОДНО СЛОВО, НИЧЕГО БОЛЬШЕ НЕ ПИШИ, ПРОСТО ВЫБЕРИ ВРАЧА ИЗ СПИСКА К КОТОРОМУ ИДТИ: {doctor_names}, ДАЖЕ ТОЧКУ НЕ ПИШИ. Симптомы: {symptoms}"
-    
+    # print(response.text)
     url = f'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key={api_key}'
+    
+    # Формируем новый промпт для выбора врача
+    new_prompt = f"ЩАС ПРОСТО ОТПРАВЬ МНЕ ОДНО СЛОВО, НИЧЕГО БОЛЬШЕ НЕ ПИШИ, ПРОСТО ВЫБЕРИ ВРАЧА ИЗ СПИСКА К КОТОРОМУ ИДТИ: {doctor_names}, ДАЖЕ ТОЧКУ НЕ ПИШИ. Симптомы: {symptoms}"
     data = {
-        "prompt": new_prompt,
-        "max_tokens": 20
+        "contents": [
+            {
+                "parts": [
+                    {"text": new_prompt}
+                ]
+            }
+        ]
     }
     headers = {
         'Content-Type': 'application/json'
     }
+    best_doctor = requests.post(url, json=data, headers=headers)
     
-    best_doctor_response = requests.post(url, json=data, headers=headers)
-    
-    if best_doctor_response.status_code == 200:
-        best_doctor_json = best_doctor_response.json()
-        best_doctor = best_doctor_json['choices'][0]['message']  # Ответ для выбора доктора
-    else:
-        raise HTTPException(status_code=best_doctor_response.status_code, detail=f"Error from Gemini API: {best_doctor_response.text}")
+    # print(best_doctor.text)
+    best_doctor_json = best_doctor.json()
+    # print(best_doctor_json)
 
-    # Если всё прошло успешно, возвращаем два ответа
     if response:
-        return best_doctor, gemini_response
+        return best_doctor_json, response.text
     else:
-        raise HTTPException(status_code=500, detail="Error from Gemini API")
+        raise HTTPException(detail=f"Error from Gemini API: {response.text}")
 
 @app.post("/submit_request/")
 async def submit_request(
@@ -179,17 +185,22 @@ async def submit_request(
     # Отправка запроса на API Gemini
     best_doctor = ""
     gemini_response = ""
-    try:
-        best_doctor1, gemini_response1 = send_request_to_gemini(symptoms=symptoms, api_key="AIzaSyBNZ9RJAIcuuLlhCj8KtbxoC6opxY_5q5E", db=db)
-        print(type(best_doctor1))
-        print(type(gemini_response1))
-        best_doctor = best_doctor1['candidates'][0]['content']['parts'][0]['text'].strip()
-        gemini_response = gemini_response1['candidates'][0]['content']['parts'][0]['text'].strip()
+    # try:
+    best_doctor1, gemini_response = send_request_to_gemini(
+        symptoms=symptoms, 
+        api_key="AIzaSyBNZ9RJAIcuuLlhCj8KtbxoC6opxY_5q5E", 
+        db=db
+    )
+    
+    # print(type(gemini_response1))
+    best_doctor = best_doctor1['candidates'][0]['content']['parts'][0]['text'].strip()
 
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    print(best_doctor1)
-    print(gemini_response1)
+    # gemini_response = gemini_response1['candidates'][0]['content']['parts'][0]['text'].strip()
+
+    # except Exception as e:
+    #     raise HTTPException(status_code=500, detail=str(e))
+    # print(best_doctor1)
+    # print(gemini_response1)
     # Найти доктора в базе данных по его имени
     doctor = db.query(DoctorsInDB).filter(DoctorsInDB.doctor_type == best_doctor).first()
 
