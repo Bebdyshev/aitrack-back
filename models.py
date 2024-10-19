@@ -2,6 +2,7 @@ from sqlalchemy import Column, Integer, String, Text, ForeignKey, DateTime, Bool
 from sqlalchemy.ext.declarative import declarative_base
 from pydantic import BaseModel
 from sqlalchemy.orm import relationship
+from datetime import datetime
 
 Base = declarative_base()
 
@@ -24,6 +25,13 @@ class UserInDB(Base):
     email = Column(String, unique=True, index=True)
     hashed_password = Column(String)
     role = Column(String)
+
+    # Define the relationship with UserRequest
+    requests = relationship("UserRequest", back_populates="user")
+    
+    # Define the relationship with ChatbotConversation
+    conversations = relationship("ChatbotConversation", back_populates="user")
+
 
 
 class UserRequest(Base):
@@ -103,3 +111,30 @@ class UserRequestModel(BaseModel):
     class Config:
         orm_mode = True
         from_attributes = True
+
+
+
+class ChatbotConversation(Base):
+    __tablename__ = "chatbot_conversations"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    chat_history = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    user = relationship("UserInDB", back_populates="conversations")
+
+class Message(Base):
+    __tablename__ = "messages"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    user_message = Column(Text, nullable=False)
+    bot_reply = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    user = relationship("UserInDB", back_populates="messages")
+
+
+# Update UserInDB to include the relationship
+UserInDB.messages = relationship("Message", back_populates="user")

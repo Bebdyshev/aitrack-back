@@ -323,9 +323,6 @@ def get_patient_request(request_id: int, token: str = Depends(oauth2_scheme), db
 
 
 
-
-
-
 @app.put("/patient_request/{request_id}/status/")
 def update_patient_request_status(
     request_id: int,
@@ -383,24 +380,24 @@ async def create_appointment(
     
     user_email = payload.get("sub")
     
-    # Find the patient by their email
+    
     patient = db.query(UserInDB).filter(UserInDB.email == user_email).first()
     if not patient:
         raise HTTPException(status_code=404, detail="Patient not found")
 
-    # Find the doctor by ID
+    
     doctor = db.query(DoctorsInDB).filter(DoctorsInDB.id == appointment.doctor_id).first()
     if not doctor:
         raise HTTPException(status_code=404, detail="Doctor not found")
 
-    # Convert time strings to datetime objects
+    
     try:
         start_time = datetime.fromisoformat(appointment.start_time)
         end_time = datetime.fromisoformat(appointment.end_time)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD HH:MM")
+    
 
-    # Create the new appointment
     new_appointment = Appointment(
         start_time=start_time,
         end_time=end_time,
@@ -427,7 +424,7 @@ async def create_appointment(
 
 import openai
 import shutil
-from fastapi import FastAPI, Depends, HTTPException, Form, File, UploadFile
+from fastapi import FastAPI, Depends, HTTPException, Form, File, UploadFile, APIRouter
 from sqlalchemy.orm import Session
 import os
 from dotenv import load_dotenv
@@ -564,3 +561,108 @@ async def transcribe_audio(
     
     except Exception as e:
         return {"error": str(e)}
+
+
+import json
+import requests
+from fastapi import Depends, HTTPException, UploadFile, File, APIRouter
+from sqlalchemy.orm import Session
+import datetime
+
+
+class ChatbotRequest(BaseModel):
+    user_message: str
+
+@app.post("/chatbot/")
+async def chatbot_interaction(
+    request: ChatbotRequest,  # Accept the request body as a Pydantic model
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db)
+):
+    # Verify access token
+    first_promt = "ты будешь посредником между врачом и пациентом, ты щас разговариваешь с пациентом, и при этом ты должен задать ему дополниетльны евопросы о его болезни, что бы потом отправить этот разговор тебя и пациента врачу, и что бы врач сразу это прочитал и понял в чем проблема, В КОНЦЕ ЕСЛИ У ТЕБЯ НЕ ОСТНЕТСЯ ВОПРОСОВ, НАПИШИ ПАЦИЕНТУ ЧТО ЗАПИШЕШЬ ЕГО НА АНАЛИЗЫ, И НПИШИ АНАЛИЗЫ КОТОРЫЕ ЕМУ НАДО СДАТЬ"
+    payload = verify_access_token(token)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid token or unauthorized")
+    
+    user_email = payload.get("sub")
+    user = db.query(UserInDB).filter(UserInDB.email == user_email).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Fetch previous conversation
+    conversation = db.query(ChatbotConversation).filter(ChatbotConversation.user_id == user.id).first()
+
+    # Prepare chat history
+    chat_history = []
+    if conversation:
+        chat_history = json.loads(conversation.chat_history)
+
+    # Add user message to chat history
+    chat_history.append({"role": "user", "text": request.user_message})  # Use request.user_message
+
+    # Prepare prompt by including entire chat history
+    prompt = first_promt + "\n".join([f"{entry['role']}: {entry['text']}" for entry in chat_history])
+
+    # Send request to Gemini
+    api_key = "AIzaSyBNZ9RJAIcuuLlhCj8KtbxoC6opxY_5q5E"
+    url = f'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key={api_key}'
+    data = {
+        "contents": [
+            {
+                "parts": [
+                    {"text": prompt}
+                ]
+            }
+        ]
+    }
+    headers = {
+        'Content-Type': 'application/json'
+    }
+    
+    response = requests.post(url, json=data, headers=headers)
+    response_data = response.json()
+
+    # Extract bot's reply
+    bot_reply = response_data['candidates'][0]['content']['parts'][0]['text'].strip()
+
+    # Add bot's response to chat history
+    chat_history.append({"role": "bot", "text": bot_reply})
+    new_message = Message(
+        user_id=user.id,
+        user_message=request.user_message,
+        bot_reply=bot_reply
+    )
+    db.add(new_message)
+
+    # Update or create conversation in the database
+    if conversation:
+        conversation.chat_history = json.dumps(chat_history)
+    else:
+        new_conversation = ChatbotConversation(user_id=user.id, chat_history=json.dumps(chat_history))
+        db.add(new_conversation)
+
+    db.commit()
+
+    return {"bot_reply": bot_reply}
+
+
+@app.get("/messages/")
+async def get_messages(
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db)
+):
+    # Verify the access token and get the user information
+    payload = verify_access_token(token)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid token or unauthorized")
+
+    user_email = payload.get("sub")
+    user = db.query(UserInDB).filter(UserInDB.email == user_email).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Fetch all messages for the authenticated user
+    messages = db.query(Message).filter(Message.user_id == user.id).all()
+
+    return messages
