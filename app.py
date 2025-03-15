@@ -623,7 +623,7 @@ async def chatbot_interaction(
     
     response = requests.post(url, json=data, headers=headers)
     response_data = response.json()
-
+    print(response_data)
     # Extract bot's reply
     bot_reply = response_data['candidates'][0]['content']['parts'][0]['text'].strip()
 
