@@ -5,7 +5,7 @@ from models import *
 from config import get_db, init_db
 from auth_utils import hash_password, verify_password, create_access_token, verify_access_token
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Form
-from typing import Dict
+from typing import Dict, List
 from sqlalchemy.orm import Session
 from datetime import timedelta
 from sqlalchemy import Column, Integer, String, Text, ForeignKey
@@ -95,7 +95,7 @@ def login_for_access_token(user: UserLogin, db: Session = Depends(get_db)) -> To
 
     access_token_expires = timedelta(minutes=30)
     access_token = create_access_token(
-        data={"sub": user.email, "role": db_user.role},  # Добавляем роль в токен
+        data={"sub": user.email, "role": db_user.role}, 
         expires_delta=access_token_expires
     )
     return {"access_token": access_token, "token_type": "bearer", "role": db_user.role}
@@ -282,6 +282,61 @@ def get_user_requests(token: str = Depends(oauth2_scheme), db: Session = Depends
     requests = db.query(UserRequest).filter(UserRequest.user_id == user.id).all()
     return [{"symptoms": req.symptoms, "image_path": req.image_path, "response": req.response} for req in requests]
 
+@app.get("/my_appointments", response_model=List[dict])
+async def get_my_appointments(
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db)
+):
+    payload = verify_access_token(token)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid token or unauthorized")
+    
+    user_email = payload.get("sub")
+    user = db.query(UserInDB).filter(UserInDB.email == user_email).first()
+    
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    appointments = []
+    
+    # Если пользователь - доктор
+    if user.role == "doctor":
+        doctor = db.query(DoctorsInDB).filter(DoctorsInDB.email == user_email).first()
+        if not doctor:
+            raise HTTPException(status_code=404, detail="Doctor not found")
+            
+        appointments = db.query(Appointment).filter(
+            Appointment.doctor_id == doctor.id
+        ).order_by(Appointment.start_time.desc()).all()
+        
+        return [{
+            "id": app.id,
+            "start_time": app.start_time,
+            "end_time": app.end_time,
+            "patient": {
+                "id": app.patient_id,
+                "name": app.patient_name
+            },
+            "status": "upcoming" if app.start_time > datetime.now() else "past"
+        } for app in appointments]
+    
+    # Если пользователь - пациент
+    else:
+        appointments = db.query(Appointment).filter(
+            Appointment.patient_id == user.id
+        ).order_by(Appointment.start_time.desc()).all()
+        
+        return [{
+            "id": app.id,
+            "start_time": app.start_time,
+            "end_time": app.end_time,
+            "doctor": {
+                "id": app.doctor_id,
+                "name": app.doctor_name,
+                "type": app.doctor_type
+            },
+            "status": "upcoming" if app.start_time > datetime.now() else "past"
+        } for app in appointments]
 
 @app.get("/my_patients", response_model=list)
 def get_my_patients(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> list:
