@@ -1,8 +1,9 @@
-from sqlalchemy import Column, Integer, String, Text, ForeignKey, DateTime, Boolean
+from sqlalchemy import Column, Integer, Float, String, Text, ForeignKey, DateTime, Boolean
 from sqlalchemy.ext.declarative import declarative_base
 from pydantic import BaseModel
 from sqlalchemy.orm import relationship
 from datetime import datetime
+from typing import Optional
 
 Base = declarative_base()
 
@@ -14,8 +15,11 @@ class DoctorsInDB(Base):
     name = Column(String, index=True)
     email = Column(String, unique=True, index=True)
     hashed_password = Column(String)
-    doctor_type = Column(String)  
-
+    doctor_type = Column(String)
+    experience = Column(Integer)
+    rating = Column(Float)
+    patient_count = Column(Integer) 
+    
 
 class UserInDB(Base):
     __tablename__ = 'users'
@@ -26,14 +30,18 @@ class UserInDB(Base):
     hashed_password = Column(String)
     role = Column(String)
 
-    # Define the relationship with UserRequest
+    gender = Column(String, nullable=True)
+    dateOfBirth = Column(DateTime, nullable=True)
+    phone = Column(String, nullable=True)
+    address = Column(String, nullable=True)
+    condition = Column(String, nullable=True)
+    riskLevel = Column(String, nullable=True)
+    lastVisit = Column(DateTime, nullable=True)
+    bloodType = Column(String, nullable=True)
+
     requests = relationship("UserRequest", back_populates="user")
-    
-    # Define the relationship with ChatbotConversation
     conversations = relationship("ChatbotConversation", back_populates="user")
-
     messages = relationship("MainSymptom", back_populates="user")
-
     main_symptoms = relationship("MainSymptom", back_populates="user")
 
 
@@ -88,7 +96,19 @@ class UserCreate(BaseModel):
     email: str
     password: str
     role: str
-    doctor_type: str = None  # Поле для типа доктора (по умолчанию None)
+    # Поля для доктора
+    doctor_type: Optional[str] = None
+    experience: Optional[int] = None
+    rating: Optional[float] = None
+    patient_count: Optional[int] = None
+    # Поля для пациента
+    gender: Optional[str] = None
+    dateOfBirth: Optional[datetime] = None
+    phone: Optional[str] = None
+    address: Optional[str] = None
+    condition: Optional[str] = None
+    riskLevel: Optional[str] = None
+    bloodType: Optional[str] = None
 
 class UserLogin(BaseModel):
     email: str
