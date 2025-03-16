@@ -115,6 +115,7 @@ async def get_current_user(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     
+    # Базовая информация для всех пользователей
     response = {
         "id": user.id,
         "name": user.name,
@@ -122,7 +123,6 @@ async def get_current_user(
         "role": user.role
     }
     
-    # Если пользователь - доктор, добавляем дополнительную информацию
     if user.role == "doctor":
         doctor = db.query(DoctorsInDB).filter(DoctorsInDB.email == user_email).first()
         if doctor:
@@ -132,6 +132,17 @@ async def get_current_user(
                 "rating": doctor.rating,
                 "patient_count": doctor.patient_count
             })
+    else:
+        response.update({
+            "gender": user.gender,
+            "dateOfBirth": user.dateOfBirth,
+            "phone": user.phone,
+            "address": user.address,
+            "condition": user.condition,
+            "riskLevel": user.riskLevel,
+            "bloodType": user.bloodType,
+            "lastVisit": user.lastVisit
+        })
     
     return response
 
