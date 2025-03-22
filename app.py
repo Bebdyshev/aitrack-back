@@ -164,51 +164,52 @@ model = genai.GenerativeModel(
   generation_config=generation_config,
 )
 
-
-
 def send_request_to_gemini(symptoms: str, api_key: str, db: Session) -> str:
-
+    # Получаем список врачей из базы данных
     doctors = db.query(DoctorsInDB).all()
-    
     doctor_names = ', '.join([doctor.doctor_type for doctor in doctors])
-    
+
+    # Конфиг генерации текста для Gemini
+    generation_config = genai.GenerationConfig(
+        temperature=0.7,
+        max_output_tokens=256
+    )
+
+    # Используем generative model (если нужно)
     model = genai.GenerativeModel(
-    model_name="tunedModels/untitled-prompt1-6chq2zgt8t9p",
-    generation_config=generation_config,
+        model_name="tunedModels/untitled-prompt1-6chq2zgt8t9p",
+        generation_config=generation_config
     )
 
-    chat_session = model.start_chat(
-    history=[
-    ]
-    )
-
+    chat_session = model.start_chat(history=[])
     response = chat_session.send_message(symptoms)
 
+    # Формируем новый запрос для выбора врача
     url = f'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key={api_key}'
     
-    new_prompt = f"ЩАС ПРОСТО ОТПРАВЬ МНЕ ОДНО СЛОВО, НИЧЕГО БОЛЬШЕ НЕ ПИШИ, ПРОСТО ВЫБЕРИ ВРАЧА ИЗ СПИСКА К КОТОРОМУ ИДТИ: {doctor_names}, ДАЖЕ ТОЧКУ НЕ ПИШИ. Симптомы: {symptoms}"
-    data = {
-        "contents": [
-            {
-                "parts": [
-                    {"text": new_prompt}
-                ]
-            }
-        ]
-    }
-    headers = {
-        'Content-Type': 'application/json'
-    }
-    best_doctor = requests.post(url, json=data, headers=headers)
-    
-    # print(best_doctor.text)
-    best_doctor_json = best_doctor.json()
-    # print(best_doctor_json)
+    new_prompt = (
+        f"CHOOSE A DOCTOR FROM THE LIST BASED ON THE GIVEN SYMPTOMS: {doctor_names}. "
+        f"PICK A DOCTOR AND CREATE A VERY SHORT CHAT TITLE (e.g., 'Facial-Irritation') and color for chat pfp. Symptoms: {symptoms}"
+        f"OUTPUT EVERYTHING IN THIS FORMAT: doctor short-description rgb(0,0,0)."
+    )
 
+    data = {
+        "contents": [{"parts": [{"text": new_prompt}]}]
+    }
+    
+    headers = {'Content-Type': 'application/json'}
+    
+    try:
+        best_doctor = requests.post(url, json=data, headers=headers)
+        best_doctor.raise_for_status()  
+        best_doctor_json = best_doctor.json()
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=500, detail=f"Error from Gemini API: {str(e)}")
+    
     if response:
         return best_doctor_json, response.text
     else:
-        raise HTTPException(detail=f"Error from Gemini API: {response.text}")
+        raise HTTPException(status_code=500, detail="No response from Gemini API")
 
 @app.post("/submit_request/")
 async def submit_request(
@@ -233,7 +234,7 @@ async def submit_request(
     
    
     
-    best_doctor = ""
+    gem_response = ""
     gemini_response = ""
 
     best_doctor1, gemini_response = send_request_to_gemini(
@@ -242,8 +243,9 @@ async def submit_request(
         db=db
     )
     
-    best_doctor = best_doctor1['candidates'][0]['content']['parts'][0]['text'].strip()
+    gem_response = best_doctor1['candidates'][0]['content']['parts'][0]['text'].strip()
 
+    best_doctor, chat_title, color = gem_response.split()
     doctor = db.query(DoctorsInDB).filter(DoctorsInDB.doctor_type == best_doctor).first()
 
     if not doctor:
@@ -257,6 +259,8 @@ async def submit_request(
         name = user.name,
         image_path="uploads",
         symptoms=symptoms,
+        color=color,
+        chat_title=chat_title,
         response=gemini_response,
         doctor_name = best_doctor_name,
         status = True,
@@ -270,7 +274,6 @@ async def submit_request(
 
 @app.get("/my_requests/", response_model=list)
 def get_user_requests(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> list:
-    # Проверка токена пользователя
     payload = verify_access_token(token)
     user_email = payload.get("sub")
     user = db.query(UserInDB).filter(UserInDB.email == user_email).first()
@@ -278,9 +281,8 @@ def get_user_requests(token: str = Depends(oauth2_scheme), db: Session = Depends
     if not user:
         raise HTTPException(status_code=400, detail="User not found")
 
-    # Получение запросов пользователя
     requests = db.query(UserRequest).filter(UserRequest.user_id == user.id).all()
-    return [{"symptoms": req.symptoms, "image_path": req.image_path, "response": req.response} for req in requests]
+    return [{"title": req.chat_title.replace("-", " "), "color": req.color, "createdAt": req.createdAt, "symptoms": req.symptoms, "response": req.response} for req in requests]
 
 @app.get("/my_appointments", response_model=List[dict])
 async def get_my_appointments(
@@ -297,6 +299,7 @@ async def get_my_appointments(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
+    current_time = datetime.datetime.now()
     appointments = []
     
     # Если пользователь - доктор
@@ -317,7 +320,7 @@ async def get_my_appointments(
                 "id": app.patient_id,
                 "name": app.patient_name
             },
-            "status": "upcoming" if app.start_time > datetime.now() else "past"
+            "status": "upcoming" if app.start_time > current_time else "past"
         } for app in appointments]
     
     # Если пользователь - пациент
@@ -335,7 +338,7 @@ async def get_my_appointments(
                 "name": app.doctor_name,
                 "type": app.doctor_type
             },
-            "status": "upcoming" if app.start_time > datetime.now() else "past"
+            "status": "upcoming" if app.start_time > current_time else "past"
         } for app in appointments]
 
 @app.get("/my_patients", response_model=list)
@@ -491,23 +494,20 @@ async def create_appointment(
     
     user_email = payload.get("sub")
     
-    
     patient = db.query(UserInDB).filter(UserInDB.email == user_email).first()
     if not patient:
         raise HTTPException(status_code=404, detail="Patient not found")
 
-    
     doctor = db.query(DoctorsInDB).filter(DoctorsInDB.id == appointment.doctor_id).first()
     if not doctor:
         raise HTTPException(status_code=404, detail="Doctor not found")
 
-    
     try:
-        start_time = datetime.fromisoformat(appointment.start_time)
-        end_time = datetime.fromisoformat(appointment.end_time)
+        # Use datetime.strptime instead of fromisoformat
+        start_time = datetime.datetime.strptime(appointment.start_time, "%Y-%m-%dT%H:%M:%S")
+        end_time = datetime.datetime.strptime(appointment.end_time, "%Y-%m-%dT%H:%M:%S")
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD HH:MM")
-    
+        raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DDTHH:MM:SS")
 
     new_appointment = Appointment(
         start_time=start_time,
