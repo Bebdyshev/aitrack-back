@@ -50,16 +50,18 @@ class UserRequest(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, nullable=False)
     user_id = Column(Integer, ForeignKey("users.id"))
-    chat_title = Column(String, nullable=False)
     image_path = Column(String, nullable=False)
+    chat_title = Column(String, nullable=False)
     color = Column(String, nullable=False)
     symptoms = Column(Text, nullable=False)
     response = Column(Text, nullable=True)
     doctor_id = Column(Text, nullable=True)
     doctor_name = Column(Text, nullable=True)
     status = Column(Boolean, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
     user = relationship("UserInDB", back_populates="requests")
-    createdAt = Column(DateTime, default=datetime.utcnow)  # Добавлено поле createdAt    
+    conversations = relationship("ChatbotConversation", back_populates="request")
+    
 
 UserInDB.requests = relationship("UserRequest", back_populates="user")
 
@@ -146,8 +148,10 @@ class ChatbotConversation(Base):
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     chat_history = Column(Text, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
+    request_id = Column(Integer, ForeignKey("user_requests.id"), nullable=True)
 
     user = relationship("UserInDB", back_populates="conversations")
+    request = relationship("UserRequest", back_populates="conversations")
 
 class Message(Base):
     __tablename__ = "messages"

@@ -17,6 +17,7 @@ import os
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime
 import google.generativeai as genai
+import json
 app = FastAPI()
 
 init_db()
@@ -223,53 +224,61 @@ async def submit_request(
         raise HTTPException(status_code=401, detail="Invalid token or unauthorized")
     
     user_email = payload.get("sub")
-    
-    if not user_email:
-        raise HTTPException(status_code=400, detail="User email not found in token")
-    
     user = db.query(UserInDB).filter(UserInDB.email == user_email).first()
     
     if not user:
         raise HTTPException(status_code=400, detail="User not found")
     
-   
-    
-    gem_response = ""
-    gemini_response = ""
-
-    best_doctor1, gemini_response = send_request_to_gemini(
+    best_doctor_json, gemini_response = send_request_to_gemini(
         symptoms=symptoms, 
         api_key="AIzaSyBNZ9RJAIcuuLlhCj8KtbxoC6opxY_5q5E", 
         db=db
     )
     
-    gem_response = best_doctor1['candidates'][0]['content']['parts'][0]['text'].strip()
+    best_doctor = best_doctor_json['candidates'][0]['content']['parts'][0]['text'].strip()
+    doctor_name, chat_title, color = best_doctor.split()  # Примерный формат выхода от модели
 
-    best_doctor, chat_title, color = gem_response.split()
-    doctor = db.query(DoctorsInDB).filter(DoctorsInDB.doctor_type == best_doctor).first()
+    doctor = db.query(DoctorsInDB).filter(DoctorsInDB.doctor_type == doctor_name).first()
 
     if not doctor:
-        raise HTTPException(status_code=404, detail=f"Doctor {best_doctor} not found")
+        raise HTTPException(status_code=404, detail=f"Doctor {doctor_name} not found")
 
-    best_doctor_id = doctor.id
-    best_doctor_name = doctor.name
-
+    # Создаем запрос пользователя
     user_request = UserRequest(
         user_id=user.id,
-        name = user.name,
+        name=user.name,
         image_path="uploads",
         symptoms=symptoms,
+        response=gemini_response,
+        doctor_name=doctor.name,
         color=color,
         chat_title=chat_title,
-        response=gemini_response,
-        doctor_name = best_doctor_name,
-        status = True,
-        doctor_id=best_doctor_id
+        status=True,
+        doctor_id=doctor.id
     )
     db.add(user_request)
     db.commit()
+    db.refresh(user_request)
 
-    return {"msg": "Request submitted successfully", "gemini_response": gemini_response}
+    # Создаём начальный чат связанный с этим реквестом
+    initial_chat = [
+        {"role": "bot", "text": f"Здравствуйте! Я ваш медицинский ассистент. Вы описали следующие симптомы: {symptoms}. Расскажите, пожалуйста, подробнее о вашем состоянии и как давно появились эти симптомы?"}
+    ]
+    
+    chatbot_conversation = ChatbotConversation(
+        user_id=user.id,
+        chat_history=json.dumps(initial_chat),
+        request_id=user_request.id
+    )
+    db.add(chatbot_conversation)
+    db.commit()
+
+    return {
+        "msg": "Request submitted successfully", 
+        "gemini_response": gemini_response,
+        "request_id": user_request.id,
+        "chat_id": chatbot_conversation.id
+    }
 
 
 @app.get("/my_requests/", response_model=list)
@@ -282,7 +291,7 @@ def get_user_requests(token: str = Depends(oauth2_scheme), db: Session = Depends
         raise HTTPException(status_code=400, detail="User not found")
 
     requests = db.query(UserRequest).filter(UserRequest.user_id == user.id).all()
-    return [{"title": req.chat_title.replace("-", " "), "color": req.color, "createdAt": req.createdAt, "symptoms": req.symptoms, "response": req.response} for req in requests]
+    return [{"title": req.chat_title.replace("-", " "), "color": req.color, "created_at": req.created_at, "symptoms": req.symptoms, "response": req.response} for req in requests]
 
 @app.get("/my_appointments", response_model=List[dict])
 async def get_my_appointments(
@@ -684,14 +693,16 @@ import datetime
 
 class ChatbotRequest(BaseModel):
     user_message: str
-@app.post("/chatbot/")
+@app.post("/chatbot/{chat_id}")
 async def chatbot_interaction(
-    request: ChatbotRequest,  # Accept the request body as a Pydantic model
+    chat_id: int,
+    request: ChatbotRequest,
     token: str = Depends(oauth2_scheme),
     db: Session = Depends(get_db)
 ):
     # Verify access token
-    first_promt = "ты будешь посредником между врачом и пациентом, ты щас разговариваешь с пациентом, и при этом ты должен задать ему дополниетльны евопросы о его болезни, что бы потом отправить этот разговор тебя и пациента врачу, и что бы врач сразу это прочитал и понял в чем проблема, В КОНЦЕ ЕСЛИ У ТЕБЯ НЕ ОСТНЕТСЯ ВОПРОСОВ, НАПИШИ ПАЦИЕНТУ ЧТО ЗАПИШЕШЬ ЕГО НА АНАЛИЗЫ, И НПИШИ АНАЛИЗЫ КОТОРЫЕ ЕМУ НАДО СДАТЬ, смотри я все время буду отправлять тебе история чата, и по этому когда ты видишь что все основные вопросы заданы и ничего больше задавать не надо, то записываешь нас куда надо, и первым словом отправляешь 12345678!!!"
+    first_promt = "ты будешь посредником между врачом и пациентом, ты щас разговариваешь с пациентом, и при этом ты должен задать ему дополниетльны евопросы о его болезни, что бы потом отправить этот разговор тебя и пациента врачу, и что бы врач сразу это прочитал и понял в чем проблема. Никогда не упоминай что ты AI или что передашь информацию врачу. Просто веди диалог как медицинский ассистент. В конце спроси еще вопросы если их останутся."
+    
     payload = verify_access_token(token)
     if not payload:
         raise HTTPException(status_code=401, detail="Invalid token or unauthorized")
@@ -701,25 +712,32 @@ async def chatbot_interaction(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     
-    # Fetch previous conversation
-    conversation = db.query(ChatbotConversation).filter(ChatbotConversation.user_id == user.id).first()
-    mainsymptom = db.query(MainSymptom).filter(MainSymptom.user_id == user.id).first()
+    # Получаем конкретный чат по ID
+    conversation = db.query(ChatbotConversation).filter(
+        ChatbotConversation.id == chat_id,
+        ChatbotConversation.user_id == user.id
+    ).first()
+    
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Chat not found")
+    
+    # Получаем реквест, связанный с этим чатом
+    user_request = db.query(UserRequest).filter(
+        UserRequest.id == conversation.request_id
+    ).first()
+    
+    if not user_request:
+        raise HTTPException(status_code=404, detail="Associated request not found")
     
     # Prepare chat history
-    chat_history = []
-    mainsymptom_str = ""
-    if conversation:
-        chat_history = json.loads(conversation.chat_history)
-    if mainsymptom:
-        mainsymptom_str = mainsymptom.text
-
+    chat_history = json.loads(conversation.chat_history)
+    
     # Add user message to chat history
     chat_history.append({"role": "user", "text": request.user_message})
-    mainsymptom_str += " " + request.user_message
-
+    
     # Prepare prompt by including entire chat history
-    prompt = first_promt + "\n".join([f"{entry['role']}: {entry['text']}" for entry in chat_history])
-
+    prompt = first_promt + "\n\nСимптомы пациента: " + user_request.symptoms + "\n\n" + "\n".join([f"{entry['role']}: {entry['text']}" for entry in chat_history])
+    
     # Send request to Gemini
     api_key = "AIzaSyBNZ9RJAIcuuLlhCj8KtbxoC6opxY_5q5E"
     url = f'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key={api_key}'
@@ -738,40 +756,24 @@ async def chatbot_interaction(
     
     response = requests.post(url, json=data, headers=headers)
     response_data = response.json()
-    print(response_data)
+    
     # Extract bot's reply
     bot_reply = response_data['candidates'][0]['content']['parts'][0]['text'].strip()
-
+    
     # Add bot's response to chat history
     chat_history.append({"role": "bot", "text": bot_reply})
-
-    # Save new message to the Message table
+    
+    # Save message to database
     new_message = Message(
         user_id=user.id,
         user_message=request.user_message,
         bot_reply=bot_reply
     )
     db.add(new_message)
-
-    # Update MainSymptom or create a new entry
-    if mainsymptom:
-        mainsymptom.text = mainsymptom_str + '\n' + str(bot_reply) + '\n'
-    else:
-        new_mainsymptom = MainSymptom(text=mainsymptom_str, user_id=user.id)
-        db.add(new_mainsymptom)
-
-    # Update or create conversation in the database
-    if conversation:
-        conversation.chat_history = json.dumps(chat_history)
-    else:
-        new_conversation = ChatbotConversation(user_id=user.id, chat_history=json.dumps(chat_history))
-        db.add(new_conversation)
-
+    
+    # Update conversation in the database
+    conversation.chat_history = json.dumps(chat_history)
     db.commit()
-
-    # If "12345678" is found in the bot's reply, trigger submit_request
-    if "12345678" in bot_reply:
-        await submit_request(symptoms=mainsymptom_str, token=token, db=db)
     
     return {"bot_reply": bot_reply}
 
@@ -825,3 +827,75 @@ async def clear_all_data(token: str = Depends(oauth2_scheme), db: Session = Depe
     clear_all_tables(db)
     
     return {"message": "Все таблицы успешно очищены"}
+
+@app.get("/my_chats/", response_model=List[dict])
+async def get_user_chats(
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db)
+):
+    payload = verify_access_token(token)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid token or unauthorized")
+    
+    user_email = payload.get("sub")
+    user = db.query(UserInDB).filter(UserInDB.email == user_email).first()
+    
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Получаем все чаты с связанными реквестами
+    chats = db.query(ChatbotConversation, UserRequest).join(
+        UserRequest, ChatbotConversation.request_id == UserRequest.id
+    ).filter(
+        ChatbotConversation.user_id == user.id
+    ).all()
+    
+    return [{
+        "chat_id": chat.id,
+        "request_id": request.id,
+        "title": request.chat_title,
+        "color": request.color,
+        "doctor_name": request.doctor_name,
+        "created_at": chat.created_at,
+        "last_message": json.loads(chat.chat_history)[-1]["text"][:50] + "..." if chat.chat_history else ""
+    } for chat, request in chats]
+
+@app.get("/chat/{chat_id}", response_model=dict)
+async def get_chat_history(
+    chat_id: int,
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db)
+):
+    payload = verify_access_token(token)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid token or unauthorized")
+    
+    user_email = payload.get("sub")
+    user = db.query(UserInDB).filter(UserInDB.email == user_email).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Получаем конкретный чат по ID
+    conversation = db.query(ChatbotConversation).filter(
+        ChatbotConversation.id == chat_id,
+        ChatbotConversation.user_id == user.id
+    ).first()
+    
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Chat not found")
+    
+    # Получаем реквест, связанный с этим чатом
+    user_request = db.query(UserRequest).filter(
+        UserRequest.id == conversation.request_id
+    ).first()
+    
+    # Возвращаем историю чата и информацию о реквесте
+    return {
+        "chat_id": conversation.id,
+        "request_id": user_request.id,
+        "doctor_name": user_request.doctor_name,
+        "title": user_request.chat_title,
+        "color": user_request.color,
+        "created_at": conversation.created_at,
+        "chat_history": json.loads(conversation.chat_history)
+    }
