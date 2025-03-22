@@ -321,16 +321,26 @@ async def get_my_appointments(
             Appointment.doctor_id == doctor.id
         ).order_by(Appointment.start_time.desc()).all()
         
-        return [{
-            "id": app.id,
-            "start_time": app.start_time,
-            "end_time": app.end_time,
-            "patient": {
-                "id": app.patient_id,
-                "name": app.patient_name
-            },
-            "status": "upcoming" if app.start_time > current_time else "past"
-        } for app in appointments]
+        result = []
+        for app in appointments:
+            appointment_data = {
+                "id": app.id,
+                "start_time": app.start_time,
+                "end_time": app.end_time,
+                "patient": {
+                    "id": app.patient_id,
+                    "name": app.patient_name
+                },
+                "appointment_type": app.appointment_type,
+                "status": "upcoming" if app.start_time > current_time else "past"
+            }
+            
+            if app.meeting_link:
+                appointment_data["meeting_link"] = app.meeting_link
+                
+            result.append(appointment_data)
+        
+        return result
     
     # Если пользователь - пациент
     else:
@@ -338,17 +348,27 @@ async def get_my_appointments(
             Appointment.patient_id == user.id
         ).order_by(Appointment.start_time.desc()).all()
         
-        return [{
-            "id": app.id,
-            "start_time": app.start_time,
-            "end_time": app.end_time,
-            "doctor": {
-                "id": app.doctor_id,
-                "name": app.doctor_name,
-                "type": app.doctor_type
-            },
-            "status": "upcoming" if app.start_time > current_time else "past"
-        } for app in appointments]
+        result = []
+        for app in appointments:
+            appointment_data = {
+                "id": app.id,
+                "start_time": app.start_time,
+                "end_time": app.end_time,
+                "doctor": {
+                    "id": app.doctor_id,
+                    "name": app.doctor_name,
+                    "type": app.doctor_type
+                },
+                "appointment_type": app.appointment_type,
+                "status": "upcoming" if app.start_time > current_time else "past"
+            }
+            
+            if app.meeting_link:
+                appointment_data["meeting_link"] = app.meeting_link
+                
+            result.append(appointment_data)
+        
+        return result
 
 @app.get("/my_patients", response_model=list)
 def get_my_patients(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> list:
@@ -483,12 +503,11 @@ def update_patient_request_status(
     return {"msg": "Request status updated successfully", "new_status": new_status}
 
 
-
-
 class AppointmentCreate(BaseModel):
-    start_time: str
-    end_time: str
+    start_time: datetime
+    end_time: datetime
     doctor_id: int
+    appointment_type: str
 
 @app.post("/create_appointment/", response_model=dict)
 async def create_appointment(
@@ -496,7 +515,7 @@ async def create_appointment(
     token: str = Depends(oauth2_scheme), 
     db: Session = Depends(get_db)
 ):
-    # Verify token for authorization
+
     payload = verify_access_token(token)
     if not payload:
         raise HTTPException(status_code=401, detail="Invalid token or unauthorized")
@@ -511,35 +530,52 @@ async def create_appointment(
     if not doctor:
         raise HTTPException(status_code=404, detail="Doctor not found")
 
-    try:
-        # Use datetime.strptime instead of fromisoformat
-        start_time = datetime.datetime.strptime(appointment.start_time, "%Y-%m-%dT%H:%M:%S")
-        end_time = datetime.datetime.strptime(appointment.end_time, "%Y-%m-%dT%H:%M:%S")
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DDTHH:MM:SS")
+    existing_appointment = (
+        db.query(Appointment)
+        .filter(
+            Appointment.doctor_id == appointment.doctor_id,
+            Appointment.start_time < appointment.end_time,
+            Appointment.end_time > appointment.start_time
+        )
+        .first()
+    )
+    if existing_appointment:
+        raise HTTPException(status_code=400, detail="This time slot is already booked for the doctor")
 
+    meeting_link = None
+    if appointment.appointment_type.lower() == "online":
+        meeting_link = "https://meet.google.com/zpx-ftcy-oxi"
+    
     new_appointment = Appointment(
-        start_time=start_time,
-        end_time=end_time,
+        start_time=appointment.start_time,
+        end_time=appointment.end_time,
         patient_name=patient.name,
         patient_id=patient.id,
         doctor_name=doctor.name,
         doctor_id=doctor.id,
-        doctor_type=doctor.doctor_type
+        doctor_type=getattr(doctor, "doctor_type", "Unknown"),
+        appointment_type=appointment.appointment_type,
+        meeting_link=meeting_link
     )
 
     db.add(new_appointment)
     db.commit()
     db.refresh(new_appointment)
 
-    return {
+    response = {
         "id": new_appointment.id,
         "message": "Appointment created successfully",
         "start_time": new_appointment.start_time,
         "end_time": new_appointment.end_time,
         "doctor": doctor.name,
-        "patient": patient.name
+        "patient": patient.name,
+        "appointment_type": new_appointment.appointment_type
     }
+    
+    if meeting_link:
+        response["meeting_link"] = meeting_link
+        
+    return response
 
 
 import openai

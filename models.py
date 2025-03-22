@@ -77,7 +77,9 @@ class Appointment(Base):
     doctor_name = Column(String, nullable=False)
     doctor_id = Column(Integer, ForeignKey("doctors.id"), nullable=False)
     doctor_type = Column(String, nullable=False)
-
+    appointment_type = Column(String, nullable=True)  # "online" или "offline"
+    meeting_link = Column(String, nullable=True)      # ссылка на видеоконференцию
+    
     patient = relationship("UserInDB", back_populates="appointments")
     doctor = relationship("DoctorsInDB", back_populates="appointments")
 
