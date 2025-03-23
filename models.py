@@ -151,6 +151,7 @@ class ChatbotConversation(Base):
     chat_history = Column(Text, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     request_id = Column(Integer, ForeignKey("user_requests.id"), nullable=True)
+    confirmed = Column(Boolean, default=False)
 
     user = relationship("UserInDB", back_populates="conversations")
     request = relationship("UserRequest", back_populates="conversations")

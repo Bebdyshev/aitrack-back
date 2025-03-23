@@ -206,8 +206,9 @@ def send_request_to_gemini(symptoms: str, api_key: str, db: Session) -> str:
         best_doctor_json = best_doctor.json()
     except requests.exceptions.RequestException as e:
         raise HTTPException(status_code=500, detail=f"Error from Gemini API: {str(e)}")
-    
     if response:
+        print(best_doctor_json)
+        print(response.text)
         return best_doctor_json, response.text
     else:
         raise HTTPException(status_code=500, detail="No response from Gemini API")
@@ -239,7 +240,7 @@ async def submit_request(
     doctor_name, chat_title, color = best_doctor.split()  # Примерный формат выхода от модели
 
     doctor = db.query(DoctorsInDB).filter(DoctorsInDB.doctor_type == doctor_name).first()
-
+    print(best_doctor)
     if not doctor:
         raise HTTPException(status_code=404, detail=f"Doctor {doctor_name} not found")
 
@@ -262,7 +263,7 @@ async def submit_request(
 
     # Создаём начальный чат связанный с этим реквестом
     initial_chat = [
-        {"role": "bot", "text": f"Здравствуйте! Я ваш медицинский ассистент. Вы описали следующие симптомы: {symptoms}. Расскажите, пожалуйста, подробнее о вашем состоянии и как давно появились эти симптомы?"}
+        {"role": "bot", "text": f"Hello! I am your medical assistant. You described the following symptoms: {symptoms}. Please tell me more about your condition and how long ago these symptoms appeared?"}
     ]
     
     chatbot_conversation = ChatbotConversation(
@@ -736,8 +737,12 @@ async def chatbot_interaction(
     token: str = Depends(oauth2_scheme),
     db: Session = Depends(get_db)
 ):
-    # Verify access token
-    first_promt = "ты будешь посредником между врачом и пациентом, ты щас разговариваешь с пациентом, и при этом ты должен задать ему дополниетльны евопросы о его болезни, что бы потом отправить этот разговор тебя и пациента врачу, и что бы врач сразу это прочитал и понял в чем проблема. Никогда не упоминай что ты AI или что передашь информацию врачу. Просто веди диалог как медицинский ассистент. В конце спроси еще вопросы если их останутся."
+
+    first_prompt = """You are a medical assistant chatting with a patient. Ask them additional questions about their symptoms 
+    to better understand their condition. Don't mention that you're AI or that you'll send this conversation to a doctor. 
+    Just have a dialogue as a medical assistant would. Response in english.
+    IF YOU DONT HAVE ANY QUESTIONS, END YOUR RESPONSE WITH THE EXACT PHRASE: 'END_OF_CONSULTATION_MARKER'
+    """
     
     payload = verify_access_token(token)
     if not payload:
@@ -748,7 +753,7 @@ async def chatbot_interaction(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     
-    # Получаем конкретный чат по ID
+    # Get the specific chat by ID
     conversation = db.query(ChatbotConversation).filter(
         ChatbotConversation.id == chat_id,
         ChatbotConversation.user_id == user.id
@@ -757,7 +762,7 @@ async def chatbot_interaction(
     if not conversation:
         raise HTTPException(status_code=404, detail="Chat not found")
     
-    # Получаем реквест, связанный с этим чатом
+    # Get the request associated with this chat
     user_request = db.query(UserRequest).filter(
         UserRequest.id == conversation.request_id
     ).first()
@@ -765,6 +770,10 @@ async def chatbot_interaction(
     if not user_request:
         raise HTTPException(status_code=404, detail="Associated request not found")
     
+    # Получаем информацию о докторе из запроса
+    doctor = db.query(DoctorsInDB).filter(DoctorsInDB.id == user_request.doctor_id).first()
+    doctor_type = doctor.doctor_type if doctor else "Unknown"
+    doctor_id = doctor.id
     # Prepare chat history
     chat_history = json.loads(conversation.chat_history)
     
@@ -772,7 +781,7 @@ async def chatbot_interaction(
     chat_history.append({"role": "user", "text": request.user_message})
     
     # Prepare prompt by including entire chat history
-    prompt = first_promt + "\n\nСимптомы пациента: " + user_request.symptoms + "\n\n" + "\n".join([f"{entry['role']}: {entry['text']}" for entry in chat_history])
+    prompt = first_prompt + "\n\nPatient symptoms: " + user_request.symptoms + "\n\n" + "\n".join([f"{entry['role']}: {entry['text']}" for entry in chat_history])
     
     # Send request to Gemini
     api_key = "AIzaSyBNZ9RJAIcuuLlhCj8KtbxoC6opxY_5q5E"
@@ -793,13 +802,14 @@ async def chatbot_interaction(
     response = requests.post(url, json=data, headers=headers)
     response_data = response.json()
     
-    # Extract bot's reply
-    bot_reply = response_data['candidates'][0]['content']['parts'][0]['text'].strip()
+    original_bot_reply = response_data['candidates'][0]['content']['parts'][0]['text'].strip()
     
-    # Add bot's response to chat history
+    consultation_complete = "END_OF_CONSULTATION_MARKER" in original_bot_reply
+    
+    bot_reply = original_bot_reply.strip()
+    
     chat_history.append({"role": "bot", "text": bot_reply})
     
-    # Save message to database
     new_message = Message(
         user_id=user.id,
         user_message=request.user_message,
@@ -811,9 +821,14 @@ async def chatbot_interaction(
     conversation.chat_history = json.dumps(chat_history)
     db.commit()
     
-    return {"bot_reply": bot_reply}
-
-
+    return {
+        "bot_reply": bot_reply,
+        "consultation_complete": consultation_complete,
+        "doctor_type": doctor_type,
+        "doctor_name": user_request.doctor_name,
+        "request_id": user_request.id,
+        "doctor_id": doctor_id
+    }
 
 @app.get("/messages/")
 async def get_messages(
@@ -837,10 +852,6 @@ async def get_messages(
 
 
 def clear_all_tables(db: Session):
-    # Удаление всех записей из таблицы MainSymptom
-    db.query(MainSymptom).delete()
-    
-    # Удаление всех записей из таблицы ChatbotConversation
     db.query(ChatbotConversation).delete()
     
     # Удаление всех записей из таблицы Message
@@ -892,7 +903,9 @@ async def get_user_chats(
         "title": request.chat_title,
         "color": request.color,
         "doctor_name": request.doctor_name,
+        "doctor_id": request.doctor_id,
         "created_at": chat.created_at,
+        "confirmed": chat.confirmed,
         "last_message": json.loads(chat.chat_history)[-1]["text"][:50] + "..." if chat.chat_history else ""
     } for chat, request in chats]
 
@@ -911,7 +924,6 @@ async def get_chat_history(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     
-    # Получаем конкретный чат по ID
     conversation = db.query(ChatbotConversation).filter(
         ChatbotConversation.id == chat_id,
         ChatbotConversation.user_id == user.id
@@ -920,18 +932,89 @@ async def get_chat_history(
     if not conversation:
         raise HTTPException(status_code=404, detail="Chat not found")
     
-    # Получаем реквест, связанный с этим чатом
     user_request = db.query(UserRequest).filter(
         UserRequest.id == conversation.request_id
     ).first()
     
-    # Возвращаем историю чата и информацию о реквесте
     return {
         "chat_id": conversation.id,
         "request_id": user_request.id,
         "doctor_name": user_request.doctor_name,
+        "doctor_id": user_request.doctor_id,
         "title": user_request.chat_title,
         "color": user_request.color,
         "created_at": conversation.created_at,
+        "confirmed": conversation.confirmed,
         "chat_history": json.loads(conversation.chat_history)
+    }
+
+@app.post("/chat_confirm/{chat_id}", response_model=dict)
+async def confirm_chat_and_create_appointment(
+    chat_id: int,
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db)
+):
+    """
+    Mark chat as confirmed and ready for appointment scheduling.
+    This endpoint is called when a consultation is complete and the patient is ready to schedule an appointment.
+    """
+    payload = verify_access_token(token)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid token or unauthorized")
+    
+    user_email = payload.get("sub")
+    user = db.query(UserInDB).filter(UserInDB.email == user_email).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Get the specific chat by ID
+    conversation = db.query(ChatbotConversation).filter(
+        ChatbotConversation.id == chat_id,
+        ChatbotConversation.user_id == user.id
+    ).first()
+    
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Chat not found")
+    
+    # Get the request associated with this chat
+    user_request = db.query(UserRequest).filter(
+        UserRequest.id == conversation.request_id
+    ).first()
+    
+    if not user_request:
+        raise HTTPException(status_code=404, detail="Associated request not found")
+    
+    # Получаем информацию о докторе из запроса
+    doctor = db.query(DoctorsInDB).filter(DoctorsInDB.id == user_request.doctor_id).first()
+    if not doctor:
+        raise HTTPException(status_code=404, detail="Doctor not found")
+    
+    # Mark conversation as confirmed (add confirmed field if it doesn't exist)
+    if not hasattr(conversation, 'confirmed'):
+        # You need to add this field to your ChatbotConversation model
+        # ALTER TABLE chatbot_conversations ADD COLUMN confirmed BOOLEAN DEFAULT FALSE;
+        pass
+    
+    conversation.confirmed = True
+    
+    # You might also want to add a confirmation message to the chat history
+    chat_history = json.loads(conversation.chat_history)
+    confirmation_message = {
+        "role": "system", 
+        "text": "Consultation completed. Your information has been recorded and is ready for appointment scheduling."
+    }
+    chat_history.append(confirmation_message)
+    conversation.chat_history = json.dumps(chat_history)
+    
+    # Save changes
+    db.commit()
+    
+    return {
+        "success": True,
+        "message": "Chat confirmed and ready for appointment",
+        "chat_id": chat_id,
+        "request_id": user_request.id,
+        "doctor_id": doctor.id,
+        "doctor_name": doctor.name,
+        "doctor_type": doctor.doctor_type
     }
