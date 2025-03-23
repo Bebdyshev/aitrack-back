@@ -5,7 +5,7 @@ from models import *
 from config import get_db, init_db
 from auth_utils import hash_password, verify_password, create_access_token, verify_access_token
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Form
-from typing import Dict, List
+from typing import Dict, List, Any
 from sqlalchemy.orm import Session
 from datetime import timedelta
 from sqlalchemy import Column, Integer, String, Text, ForeignKey
@@ -1018,3 +1018,159 @@ async def confirm_chat_and_create_appointment(
         "doctor_name": doctor.name,
         "doctor_type": doctor.doctor_type
     }
+
+@app.get("/patient_info/{patient_id}", response_model=Dict[str, Any])
+async def get_patient_info(
+    patient_id: int,
+    include_chat_history: bool = True,
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db)
+):
+    """
+    Get comprehensive information about a specific patient.
+    Only accessible to doctors.
+    
+    Parameters:
+    - patient_id: ID of the patient
+    - include_chat_history: Whether to include full chat history (default: True)
+    """
+    # Verify token and ensure the user is a doctor
+    payload = verify_access_token(token)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid token or unauthorized")
+    
+    user_email = payload.get("sub")
+    doctor_user = db.query(UserInDB).filter(UserInDB.email == user_email).first()
+    
+    if not doctor_user or doctor_user.role != "doctor":
+        raise HTTPException(status_code=403, detail="Only doctors can access patient information")
+    
+    # Verify the doctor exists in the doctors table
+    doctor = db.query(DoctorsInDB).filter(DoctorsInDB.email == doctor_user.email).first()
+    if not doctor:
+        raise HTTPException(status_code=404, detail="Doctor profile not found")
+    
+    # Get the patient information
+    patient = db.query(UserInDB).filter(UserInDB.id == patient_id, UserInDB.role == "patient").first()
+    if not patient:
+        raise HTTPException(status_code=404, detail="Patient not found")
+    
+    # Get patient requests associated with this doctor
+    patient_requests = db.query(UserRequest).filter(
+        UserRequest.user_id == patient.id,
+        UserRequest.doctor_id == doctor.id
+    ).all()
+    
+    # Get patient appointments with this doctor
+    appointments = db.query(Appointment).filter(
+        Appointment.patient_id == patient.id,
+        Appointment.doctor_id == doctor.id
+    ).order_by(Appointment.start_time.desc()).all()
+    
+    # Get associated chatbot conversations
+    conversations = []
+    for req in patient_requests:
+        conv = db.query(ChatbotConversation).filter(
+            ChatbotConversation.request_id == req.id
+        ).first()
+        if conv:
+            chat_data = {
+                "id": conv.id,
+                "request_id": req.id,
+                "created_at": conv.created_at,
+                "confirmed": conv.confirmed,
+                "chat_title": req.chat_title,
+                "symptoms": req.symptoms
+            }
+            
+            # Include chat history if requested
+            if include_chat_history:
+                try:
+                    chat_data["chat_history"] = json.loads(conv.chat_history)
+                except:
+                    chat_data["chat_history"] = []
+            
+            conversations.append(chat_data)
+    
+    # Get current time for appointment status
+    current_time = datetime.datetime.now()
+    
+    # Compile the patient information
+    patient_info = {
+        "id": patient.id,
+        "name": patient.name,
+        "email": patient.email,
+        "role": patient.role,
+        "personal_info": {
+            "gender": patient.gender,
+            "dateOfBirth": patient.dateOfBirth,
+            "age": calculate_age(patient.dateOfBirth) if patient.dateOfBirth else None,
+            "phone": patient.phone,
+            "address": patient.address,
+        },
+        "medical_info": {
+            "condition": patient.condition,
+            "riskLevel": patient.riskLevel,
+            "lastVisit": patient.lastVisit,
+            "bloodType": patient.bloodType,
+        },
+        "requests": [{
+            "id": req.id,
+            "date": req.created_at,
+            "symptoms": req.symptoms,
+            "response": req.response,
+            "status": req.status,
+            "chat_title": req.chat_title
+        } for req in patient_requests],
+        "appointments": [{
+            "id": app.id,
+            "start_time": app.start_time,
+            "end_time": app.end_time,
+            "appointment_type": app.appointment_type,
+            "status": "upcoming" if app.start_time > current_time else "past",
+            "meeting_link": app.meeting_link
+        } for app in appointments],
+        "conversations": conversations
+    }
+    
+    # Try to get the most recent medical documents if available
+    try:
+        last_medical_docs = db.query(MedicalDocument).filter(
+            MedicalDocument.doctor_id == doctor.id,
+            MedicalDocument.patient_id == patient.id
+        ).order_by(MedicalDocument.created_at.desc()).limit(2).all()
+        
+        if last_medical_docs:
+            patient_info["medical_documents"] = [{
+                "id": doc.id,
+                "date": doc.created_at,
+                "document": doc.document,
+                "transcript": doc.transcript
+            } for doc in last_medical_docs]
+    except Exception as e:
+        # If there's an error or medical documents aren't available, just continue
+        print(f"Error fetching medical documents: {str(e)}")
+    
+    return patient_info
+
+# Helper function to calculate age from date of birth
+def calculate_age(dob_str):
+    if not dob_str:
+        return None
+    
+    try:
+        # Parse date string - adjust the format according to your date format
+        dob_formats = ["%Y-%m-%d", "%d-%m-%Y", "%m/%d/%Y", "%Y/%m/%d"]
+        
+        for fmt in dob_formats:
+            try:
+                dob = datetime.strptime(dob_str, fmt)
+                today = datetime.today()
+                age = today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
+                return age
+            except ValueError:
+                continue
+        
+        return None  # None of the formats worked
+    except:
+        return None  # Any other error
