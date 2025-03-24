@@ -590,6 +590,7 @@ import io
 load_dotenv()
 
 openai.api_key = os.getenv("OPENAI_API_KEY")
+print(os.getenv("OPENAI_API_KEY"))
 @app.post("/predict/")
 async def submit_request1(
     symptoms: str = Form(...),
@@ -619,13 +620,11 @@ async def submit_request1(
     with open(file_location, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
-    # Формируем запрос для OpenAI
     prompt = (
         f"Предположи болезнь по данным которые я скинул, результаты не мои, "
         f"ПРОСТО НАПИШИ ДИАГНОЗ И почему так! Основываясь на этих симптомах: {symptoms}"
     )
 
-    # Отправка запроса к OpenAI
     response = openai.ChatCompletion.create(
         model="gpt-4o-mini",  # Замените на нужную модель
         messages=[
@@ -665,59 +664,71 @@ def file_from_trascript(text):
 
 
 
+import openai
 
-@app.post("/transcribe/")
+@app.post("/transcribe")
 async def transcribe_audio(
+    patient_id: int,
     file: UploadFile = File(...),
     token: str = Depends(oauth2_scheme),
     db: Session = Depends(get_db)
 ):
     payload = verify_access_token(token)
-    
     if not payload:
         raise HTTPException(status_code=401, detail="Invalid token or unauthorized")
-    
+
     user_email = payload.get("sub")
-    
     doctor_user = db.query(UserInDB).filter(UserInDB.email == user_email).first()
-    
+
     if not doctor_user or doctor_user.role != "doctor":
         raise HTTPException(status_code=403, detail="User is not a doctor")
-    
+
+    # Проверяем существование пациента
+    patient = db.query(UserInDB).filter(
+        UserInDB.id == patient_id,
+        UserInDB.role == "patient"
+    ).first()
+    if not patient:
+        raise HTTPException(status_code=404, detail="Patient not found")
+
     try:
         audio_bytes = await file.read()
-
-        
         audio_file = io.BytesIO(audio_bytes)
-        audio_file.name = file.filename
+        audio_file.name = file.filename  # Required for OpenAI API
 
-        transcription = openai.Audio.transcribe(
+        # ✅ Corrected OpenAI Whisper API Call
+        transcription = openai.audio.transcriptions.create(
             model="whisper-1",
             file=audio_file,
             language="ru"
         )
-        
-        document_text, reciept_text = file_from_trascript(transcription['text'])
 
-        # Save the transcript and document in the database
+        document_text, receipt_text = file_from_trascript(transcription.text)
+
         new_document = MedicalDocument(
             doctor_id=doctor_user.id,
-            transcript=transcription['text'],
-            document=document_text
+            patient_id=patient_id,
+            transcript=transcription.text,
+            document=document_text,
+            receipt=receipt_text
         )
         db.add(new_document)
         db.commit()
 
-        new_document = MedicalDocument(
-            doctor_id=doctor_user.id,
-            transcript=transcription['text'],
-            document=reciept_text
-        )
-        db.add(new_document)
+        # Обновляем дату последнего визита пациента
+        patient.lastVisit = datetime.datetime.now()
         db.commit()
-        return {"transcript": transcription['text'], "document": document_text, "reciept": reciept_text}
-    
+
+        return {
+            "transcript": transcription.text,
+            "document": document_text,
+            "receipt": receipt_text,
+            "document_id": new_document.id
+        }
+
     except Exception as e:
+        db.rollback()
+        print(f"Error in transcribe_audio: {str(e)}")
         return {"error": str(e)}
 
 

@@ -95,7 +95,7 @@ class MedicalDocument(Base):
     doctor_id = Column(Integer, ForeignKey('users.id'))
     transcript = Column(Text, nullable=False)
     document = Column(Text, nullable=False)
-
+    receipt = Column(Text, nullable=False)
 
 class UserCreate(BaseModel):
     name: str
