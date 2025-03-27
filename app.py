@@ -190,8 +190,9 @@ def send_request_to_gemini(symptoms: str, api_key: str, db: Session) -> str:
     
     new_prompt = (
         f"CHOOSE A DOCTOR FROM THE LIST BASED ON THE GIVEN SYMPTOMS: {doctor_names}. "
-        f"PICK A DOCTOR AND CREATE A VERY SHORT CHAT TITLE (e.g., 'Facial-Irritation') and color for chat pfp. Symptoms: {symptoms}"
-        f"OUTPUT EVERYTHING IN THIS FORMAT: doctor short-description rgb(0,0,0)."
+        f"PICK A DOCTOR AND CREATE A VERY SHORT CHAT TITLE (e.g., 'Facial-Irritation') and color for chat pfp. Symptoms: {symptoms} "
+        f"OUTPUT EXACTLY IN THIS FORMAT WITHOUT ANY ADDITIONAL TEXT: [doctor-type] [chat-title] rgb(r,g,b)"
+        f"Example output: Dermatologist Facial-Irritation rgb(255,100,100)"
     )
 
     data = {
@@ -237,49 +238,66 @@ async def submit_request(
     )
     
     best_doctor = best_doctor_json['candidates'][0]['content']['parts'][0]['text'].strip()
-    doctor_name, chat_title, color = best_doctor.split()  # Примерный формат выхода от модели
-
-    doctor = db.query(DoctorsInDB).filter(DoctorsInDB.doctor_type == doctor_name).first()
-    print(best_doctor)
-    if not doctor:
-        raise HTTPException(status_code=404, detail=f"Doctor {doctor_name} not found")
-
-    # Создаем запрос пользователя
-    user_request = UserRequest(
-        user_id=user.id,
-        name=user.name,
-        image_path="uploads",
-        symptoms=symptoms,
-        response=gemini_response,
-        doctor_name=doctor.name,
-        color=color,
-        chat_title=chat_title,
-        status=True,
-        doctor_id=doctor.id
-    )
-    db.add(user_request)
-    db.commit()
-    db.refresh(user_request)
-
-    # Создаём начальный чат связанный с этим реквестом
-    initial_chat = [
-        {"role": "bot", "text": f"Hello! I am your medical assistant. You described the following symptoms: {symptoms}. Please tell me more about your condition and how long ago these symptoms appeared?"}
-    ]
+    print("Gemini response:", best_doctor)  # Для отладки
     
-    chatbot_conversation = ChatbotConversation(
-        user_id=user.id,
-        chat_history=json.dumps(initial_chat),
-        request_id=user_request.id
-    )
-    db.add(chatbot_conversation)
-    db.commit()
+    try:
+        # Используем более надежный способ разбора ответа
+        parts = best_doctor.split('rgb')
+        doctor_info = parts[0].strip()
+        color = 'rgb' + parts[1].strip()
+        print(doctor_info)
+        # Разделяем информацию о докторе на тип и название чата
+        doctor_parts = doctor_info.split()
+        doctor_name = doctor_parts[0]
+        chat_title = doctor_parts[1]  # Все слова между типом доктора и цветом
+        
+        doctor = db.query(DoctorsInDB).filter(DoctorsInDB.doctor_type == doctor_name).first()
+        if not doctor:
+            raise HTTPException(status_code=404, detail=f"Doctor {doctor_name} not found")
 
-    return {
-        "msg": "Request submitted successfully", 
-        "gemini_response": gemini_response,
-        "request_id": user_request.id,
-        "chat_id": chatbot_conversation.id
-    }
+        # Создаем запрос пользователя
+        user_request = UserRequest(
+            user_id=user.id,
+            name=user.name,
+            image_path="uploads",
+            symptoms=symptoms,
+            response=gemini_response,
+            doctor_name=doctor.name,
+            color=color,
+            chat_title=chat_title,
+            status=True,
+            doctor_id=doctor.id
+        )
+        db.add(user_request)
+        db.commit()
+        db.refresh(user_request)
+
+        # Создаём начальный чат связанный с этим реквестом
+        initial_chat = [
+            {"role": "bot", "text": f"Hello! I am your medical assistant. You described the following symptoms: {symptoms}. Please tell me more about your condition and how long ago these symptoms appeared?"}
+        ]
+        
+        chatbot_conversation = ChatbotConversation(
+            user_id=user.id,
+            chat_history=json.dumps(initial_chat),
+            request_id=user_request.id
+        )
+        db.add(chatbot_conversation)
+        db.commit()
+
+        return {
+            "msg": "Request submitted successfully", 
+            "gemini_response": gemini_response,
+            "request_id": user_request.id,
+            "chat_id": chatbot_conversation.id
+        }
+
+    except Exception as e:
+        print(f"Error parsing Gemini response: {str(e)}")
+        raise HTTPException(
+            status_code=500, 
+            detail="Error processing doctor selection. Please try again."
+        )
 
 
 @app.get("/my_requests/", response_model=list)
@@ -653,13 +671,33 @@ def file_from_trascript(text):
         generation_config=generation_config,
     )
 
-    chat_session = model.start_chat(
-        history=[
-        ]
-    )
+    chat_session = model.start_chat(history=[])
 
-    response = chat_session.send_message(f'Я сделал транскрипт разговора врача и пациента, теперь ты должен из этого трансрипта взять полезную информацию о болезне пациенте, все его симптомы, о его лечении о рекомендациях врача, и так далее, ничего сам не добавляй, сделай прям медицинское описание из поликлиники, бери информацию только из транскрипта: {text}')
-    response1 = chat_session.send_message(f'Я сделал транскрипт разговора врача и пациента, теперь ты должен из этого трансрипта взять полезную информацию о болезне пациенте, и напиши рецепт лекарств для пациента исходя от разговора врача: {text}')  
+    medical_doc_prompt = f"""As an AI medical assistant, analyze this doctor-patient conversation transcript 
+    and create a structured medical document that will help the doctor make accurate diagnosis and treatment decisions.
+    
+    Focus on extracting and organizing:
+    - Patient's reported symptoms and their duration
+    - Relevant medical history mentioned
+    - Physical examination findings
+    - Doctor's observations and preliminary diagnosis
+    - Any test results or measurements discussed
+    
+    Format this as a professional medical record, similar to clinical documentation. 
+    Only include information explicitly mentioned in the transcript: {text}"""
+
+    prescription_prompt = f"""Based on the same doctor-patient conversation, create a clear summary of:
+    - Prescribed medications with their dosages and duration
+    - Treatment recommendations
+    - Lifestyle modifications suggested
+    - Follow-up instructions
+    
+    This will serve as a reference for both the doctor and patient to ensure proper treatment adherence.
+    Only include medications and recommendations explicitly mentioned by the doctor in the transcript: {text}"""
+
+    response = chat_session.send_message(medical_doc_prompt)
+    response1 = chat_session.send_message(prescription_prompt)
+    
     return (response.text, response1.text)
 
 
@@ -683,7 +721,6 @@ async def transcribe_audio(
     if not doctor_user or doctor_user.role != "doctor":
         raise HTTPException(status_code=403, detail="User is not a doctor")
 
-    # Проверяем существование пациента
     patient = db.query(UserInDB).filter(
         UserInDB.id == patient_id,
         UserInDB.role == "patient"
@@ -694,33 +731,46 @@ async def transcribe_audio(
     try:
         audio_bytes = await file.read()
         audio_file = io.BytesIO(audio_bytes)
-        audio_file.name = file.filename  # Required for OpenAI API
-
-        # ✅ Corrected OpenAI Whisper API Call
-        transcription = openai.audio.transcriptions.create(
-            model="whisper-1",
-            file=audio_file,
-            language="ru"
-        )
-
-        document_text, receipt_text = file_from_trascript(transcription.text)
+        
+        azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
+        azure_api_key = os.getenv("AZURE_OPENAI_KEY")
+        
+        url = f"{azure_endpoint}/openai/deployments/whisper/audio/translations?api-version=2024-06-01"
+        
+        files = {
+            'file': (file.filename, audio_file, file.content_type)
+        }
+        
+        headers = {
+            "api-key": azure_api_key
+        }
+        
+        response = requests.post(url, files=files, headers=headers)
+        
+        if response.status_code != 200:
+            raise HTTPException(status_code=response.status_code, 
+                                detail=f"Azure OpenAI API error: {response.text}")
+        
+        result = response.json()
+        transcription_text = result.get("text", "")
+        
+        document_text, receipt_text = file_from_trascript(transcription_text)
 
         new_document = MedicalDocument(
             doctor_id=doctor_user.id,
             patient_id=patient_id,
-            transcript=transcription.text,
+            transcript=transcription_text,
             document=document_text,
             receipt=receipt_text
         )
         db.add(new_document)
         db.commit()
 
-        # Обновляем дату последнего визита пациента
         patient.lastVisit = datetime.datetime.now()
         db.commit()
 
         return {
-            "transcript": transcription.text,
+            "transcript": transcription_text,
             "document": document_text,
             "receipt": receipt_text,
             "document_id": new_document.id
@@ -1185,3 +1235,63 @@ def calculate_age(dob_str):
         return None  # None of the formats worked
     except:
         return None  # Any other error
+
+@app.get("/my_transcribes", response_model=List[dict])
+async def get_my_transcribes(
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db)
+):
+    payload = verify_access_token(token)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid token or unauthorized")
+    
+    user_email = payload.get("sub")
+    user = db.query(UserInDB).filter(UserInDB.email == user_email).first()
+    
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    try:
+        if user.role == "doctor":
+            user = db.query(UserInDB).filter(UserInDB.email == user_email).first()
+            if not user:
+                raise HTTPException(status_code=404, detail="Doctor profile not found")
+            
+            # Добавляем отладочную информацию
+            print(f"Looking for documents for doctor ID: {user.id}")
+            
+            # Сначала проверим, есть ли вообще документы для этого доктора
+            doc_count = db.query(MedicalDocument).filter(
+                MedicalDocument.doctor_id == user.id
+            ).count()
+            print(f"Found {doc_count} documents for this doctor")
+            
+            # Исправленный запрос
+            documents = db.query(MedicalDocument, UserInDB).join(
+                UserInDB, 
+                UserInDB.id == MedicalDocument.patient_id  # Уточняем условие JOIN
+            ).filter(
+                MedicalDocument.doctor_id == user.id
+            ).order_by(MedicalDocument.created_at.desc()).all()
+            
+            print(f"After join, found {len(documents)} documents")
+            
+            result = [{
+                "id": doc.id,
+                "created_at": doc.created_at,
+                "patient": {
+                    "id": patient.id,
+                    "name": patient.name,
+                    "email": patient.email
+                },
+                "transcript": doc.transcript,
+                "document": doc.document,
+                "receipt": doc.receipt
+            } for doc, patient in documents]
+            
+            print(f"Returning {len(result)} documents")
+            return result
+            
+    except Exception as e:
+        print(f"Error in get_my_transcribes: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))

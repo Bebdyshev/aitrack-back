@@ -83,7 +83,6 @@ class Appointment(Base):
     patient = relationship("UserInDB", back_populates="appointments")
     doctor = relationship("DoctorsInDB", back_populates="appointments")
 
-# Не забудьте обновить ваши модели UserInDB и DoctorsInDB, чтобы они знали о связи.
 UserInDB.appointments = relationship("Appointment", back_populates="patient")
 DoctorsInDB.appointments = relationship("Appointment", back_populates="doctor")
 
@@ -92,10 +91,15 @@ class MedicalDocument(Base):
     __tablename__ = "medical_documents"
     
     id = Column(Integer, primary_key=True, index=True)
-    doctor_id = Column(Integer, ForeignKey('users.id'))
+    doctor_id = Column(Integer, ForeignKey('doctors.id'))
+    patient_id = Column(Integer, ForeignKey('users.id'), nullable=False)
     transcript = Column(Text, nullable=False)
     document = Column(Text, nullable=False)
     receipt = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    doctor = relationship("DoctorsInDB", foreign_keys=[doctor_id])
+    patient = relationship("UserInDB", foreign_keys=[patient_id])
 
 class UserCreate(BaseModel):
     name: str
