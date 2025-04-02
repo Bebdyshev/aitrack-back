@@ -150,7 +150,9 @@ async def get_current_user(
 UPLOAD_FOLDER = "uploads/"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-genai.configure(api_key='AIzaSyBNZ9RJAIcuuLlhCj8KtbxoC6opxY_5q5E')
+gemini_api_key = os.getenv("GEMINI_API_KEY")
+gemini_model_name = os.getenv("GEMINI_MODEL_NAME")
+genai.configure(api_key=gemini_api_key)
 
 # Create the model
 generation_config = {
@@ -161,7 +163,7 @@ generation_config = {
   "response_mime_type": "text/plain",
 }
 model = genai.GenerativeModel(
-  model_name="tunedModels/untitled-prompt1-6chq2zgt8t9p",
+  model_name=gemini_model_name,
   generation_config=generation_config,
 )
 
@@ -178,7 +180,7 @@ def send_request_to_gemini(symptoms: str, api_key: str, db: Session) -> str:
 
     # Используем generative model (если нужно)
     model = genai.GenerativeModel(
-        model_name="tunedModels/untitled-prompt1-6chq2zgt8t9p",
+        model_name=gemini_model_name,
         generation_config=generation_config
     )
 
@@ -233,7 +235,7 @@ async def submit_request(
     
     best_doctor_json, gemini_response = send_request_to_gemini(
         symptoms=symptoms, 
-        api_key="AIzaSyBNZ9RJAIcuuLlhCj8KtbxoC6opxY_5q5E", 
+        api_key=gemini_api_key, 
         db=db
     )
     
@@ -632,6 +634,9 @@ async def submit_request1(
     if not user:
         raise HTTPException(status_code=400, detail="User not found")
     
+    # Получаем переменные окружения для Azure OpenAI
+    azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
+    azure_api_key = os.getenv("AZURE_OPENAI_KEY")
 
     # Сохранение файла на сервере
     file_location = os.path.join(UPLOAD_FOLDER, file.filename)
@@ -639,22 +644,96 @@ async def submit_request1(
         shutil.copyfileobj(file.file, buffer)
 
     prompt = (
-        f"Предположи болезнь по данным которые я скинул, результаты не мои, "
-        f"ПРОСТО НАПИШИ ДИАГНОЗ И почему так! Основываясь на этих симптомах: {symptoms}"
+        f"Based on the information I've shared (which is not about me personally), "
+        f"please provide a potential diagnosis and explain your reasoning. "
+        f"Consider these symptoms: {symptoms}. "
+        f"ONLY PROVIDE THE DIAGNOSIS AND EXPLANATION without any additional information."
     )
 
-    response = openai.ChatCompletion.create(
-        model="gpt-4o-mini",  # Замените на нужную модель
-        messages=[
-            {"role": "user", "content": prompt}
-        ]
-    )
-
+    # Формируем запрос для Azure OpenAI API
+    headers = {
+        "Content-Type": "application/json",
+        "api-key": azure_api_key
+    }
     
-
-    gemini_response = response.choices[0].message['content']
-
-    return {"response": gemini_response}
+    data = {
+        "messages": [
+            {"role": "user", "content": prompt}
+        ],
+        "temperature": 0.7,
+        "max_tokens": 800
+    }
+    
+    try:
+        # Отправляем запрос к Azure OpenAI API
+        response = requests.post(
+            azure_endpoint,
+            headers=headers,
+            json=data
+        )
+        
+        # Проверяем статус ответа
+        response.raise_for_status()
+        
+        # Получаем ответ
+        response_data = response.json()
+        
+        if 'choices' in response_data and len(response_data['choices']) > 0:
+            gemini_response = response_data['choices'][0]['message']['content']
+            
+            # Создаем структурированный ответ
+            return {
+                "status": "success",
+                "data": {
+                    "file": {
+                        "name": file.filename,
+                        "location": file_location,
+                        "type": file.content_type
+                    },
+                    "symptoms": symptoms,
+                    "analysis": {
+                        "raw_response": gemini_response,
+                        "timestamp": datetime.datetime.now().isoformat()
+                    },
+                    "user": {
+                        "id": user.id,
+                        "email": user.email
+                    }
+                }
+            }
+        else:
+            raise HTTPException(
+                status_code=500, 
+                detail={
+                    "status": "error",
+                    "message": "No valid response from Azure OpenAI API",
+                    "timestamp": datetime.datetime.now().isoformat()
+                }
+            )
+        
+    except requests.exceptions.RequestException as e:
+        error_response = {
+            "status": "error",
+            "error": {
+                "type": "API_ERROR",
+                "message": str(e),
+                "timestamp": datetime.datetime.now().isoformat()
+            }
+        }
+        print(f"Error calling Azure OpenAI API: {str(e)}")
+        raise HTTPException(status_code=500, detail=error_response)
+        
+    except Exception as e:
+        error_response = {
+            "status": "error",
+            "error": {
+                "type": "INTERNAL_ERROR",
+                "message": str(e),
+                "timestamp": datetime.datetime.now().isoformat()
+            }
+        }
+        print(f"Unexpected error: {str(e)}")
+        raise HTTPException(status_code=500, detail=error_response)
 
 
 def file_from_trascript(text):
@@ -845,7 +924,7 @@ async def chatbot_interaction(
     prompt = first_prompt + "\n\nPatient symptoms: " + user_request.symptoms + "\n\n" + "\n".join([f"{entry['role']}: {entry['text']}" for entry in chat_history])
     
     # Send request to Gemini
-    api_key = "AIzaSyBNZ9RJAIcuuLlhCj8KtbxoC6opxY_5q5E"
+    api_key = gemini_api_key
     url = f'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key={api_key}'
     data = {
         "contents": [
@@ -878,7 +957,6 @@ async def chatbot_interaction(
     )
     db.add(new_message)
     
-    # Update conversation in the database
     conversation.chat_history = json.dumps(chat_history)
     db.commit()
     
@@ -1295,3 +1373,43 @@ async def get_my_transcribes(
     except Exception as e:
         print(f"Error in get_my_transcribes: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+def clear_specific_records(db: Session, record_id: int):
+    try:
+        # Удаляем записи из ChatbotConversation
+        chat = db.query(ChatbotConversation).filter(
+            ChatbotConversation.request_id == record_id
+        ).delete()
+        
+        # Удаляем запрос пользователя
+        user_request = db.query(UserRequest).filter(
+            UserRequest.id == record_id
+        ).delete()
+        
+        # Фиксируем изменения
+        db.commit()
+        
+        return {
+            "status": "success",
+            "deleted": {
+                "chat_records": chat,
+                "user_request": user_request
+            }
+        }
+        
+    except Exception as e:
+        db.rollback()
+        print(f"Error during deletion: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error during deletion: {str(e)}"
+        )
+
+# Эндпоинт для вызова функции
+@app.delete("/clear_records/{record_id}")
+async def delete_records(
+    record_id: int,
+    db: Session = Depends(get_db)
+):
+    
+    return clear_specific_records(db, record_id)
